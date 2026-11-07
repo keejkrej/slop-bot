@@ -10,6 +10,7 @@ A single-tenant personal bot club for Android, web, and desktop. Create custom b
 - **Agents:** AI SDK 7 `WorkflowAgent` (the durable `ToolLoopAgent` counterpart), Vercel AI Gateway with `anthropic/claude-sonnet-5.5` as the default model, and Vercel Workflows.
 - **Persistence:** Drizzle + Postgres in production; an atomic file store for zero-setup local development.
 - **Connections:** custom Streamable HTTP MCP, OAuth discovery + dynamic client registration + PKCE, and optional encrypted API-key headers for providers such as Composio.
+- **Native capabilities:** Parallel Search, per-bot Mem0 memory, just-in-time Vercel Sandbox computers, and AgentMail sends with durable signed approval/resume.
 - **Desktop:** Electrobun with the native system webview (WKWebView, WebView2, or WebKitGTK). Its outbound bridge reaches MCP servers on your computer without opening an inbound cloud-accessible port.
 - **Application layer:** Effect 4 services, Layers, typed errors, and dependency injection for storage, authentication, and MCP.
 

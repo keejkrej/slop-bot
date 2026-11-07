@@ -5,6 +5,7 @@ import type { Bot, ChatMessage } from "@slopbot/contracts";
 
 import type { McpToolDefinition } from "../apps/web/lib/server/mcp";
 import { executeDesktopTool } from "./desktop-tools";
+import { nativeTools } from "./native-tools";
 import { McpService, StoreService, fromPromise, runService, withStore } from "../apps/web/lib/server/effect";
 
 export type GroupTurnInput = {
@@ -12,6 +13,7 @@ export type GroupTurnInput = {
   conversationId: string;
   botIds: string[];
   useGateway: boolean;
+  resumeActionId?: string;
 };
 
 type BotContext = {
@@ -25,15 +27,17 @@ type LoadedTool = McpToolDefinition & {
   qualifiedName: string;
 };
 
-export async function runGroupTurn(input: GroupTurnInput): Promise<{ savedMessageIds: string[] }> {
+export async function runGroupTurn(input: GroupTurnInput): Promise<{ savedMessageIds: string[]; pendingActionId?: string }> {
   "use workflow";
 
   const savedMessageIds: string[] = [];
   try {
     for (const botId of input.botIds.slice(0, 4)) {
-      const context = await loadBotContext(input.userId, input.conversationId, botId);
+      const resumeAction = input.resumeActionId && botId === input.resumeActionId ? await loadResumeAction(input.userId, input.conversationId, botId) : null;
+      if (input.resumeActionId && !resumeAction) continue;
+      const context = resumeAction ?? await loadBotContext(input.userId, input.conversationId, botId);
       if (!context) continue;
-      const tools = await loadBotTools(input.userId, context.bot.integrationIds);
+      const tools = await loadBotTools(input.userId);
       let content: string;
       try {
         if (!input.useGateway) {
@@ -43,7 +47,8 @@ export async function runGroupTurn(input: GroupTurnInput): Promise<{ savedMessag
             id: context.bot.id,
             model: context.bot.model,
             instructions: instructionsFor(context.bot),
-            tools: makeTools(tools, input.userId),
+            tools: { ...makeTools(tools, input.userId), ...nativeTools(context.bot.id, input.conversationId) },
+            experimental_toolApprovalSecret: { environmentVariable: "TOOL_APPROVAL_SECRET" },
             toolCallConcurrency: 1,
           });
           const result = await agent.generate({
@@ -51,6 +56,13 @@ export async function runGroupTurn(input: GroupTurnInput): Promise<{ savedMessag
             stopWhen: isStepCount(6),
             maxOutputTokens: 1_200,
           });
+          const pending = approvalRequestOf(result);
+          if (pending) {
+            const actionId = await createApproval(input.userId, input.conversationId, botId, result.responseMessages, pending.summary);
+            await saveApprovalMessage(input.userId, input.conversationId, actionId);
+            return { savedMessageIds, pendingActionId: actionId };
+          }
+          if (resumeAction) await setApprovalStatus(input.userId, input.resumeActionId!, "completed");
           content = result.text.trim() || "I don't have a useful response yet.";
         }
       } catch (error) {
@@ -83,11 +95,63 @@ async function loadBotContext(userId: string, conversationId: string, botId: str
   }));
 }
 
-async function loadBotTools(userId: string, integrationIds: string[]): Promise<LoadedTool[]> {
+async function loadResumeAction(userId: string, conversationId: string, actionId: string): Promise<BotContext | null> {
+  "use step";
+  return runService(withStore(async (store) => {
+    const action = await store.getPendingAction(userId, actionId);
+    if (!action || action.status !== "pending") return null;
+    const bot = await store.getBot(userId, action.botId);
+    if (!bot) return null;
+    return {
+      bot,
+      messages: [
+        ...(action.modelMessages as ModelMessage[]),
+        { role: "tool", content: [{ type: "tool-approval-response", approvalId: action.id, approved: true }] },
+      ],
+    };
+  }));
+}
+
+async function createApproval(userId: string, conversationId: string, botId: string, modelMessages: ModelMessage[], summary: string): Promise<string> {
+  "use step";
+  return runService(withStore(async (store) => {
+    const action = await store.createPendingAction({ userId, conversationId, botId, kind: "tool_approval", summary, modelMessages });
+    return action.id;
+  }));
+}
+
+async function saveApprovalMessage(userId: string, conversationId: string, actionId: string): Promise<void> {
+  "use step";
+  await runService(withStore((store) => store.addMessage(userId, {
+    conversationId,
+    senderType: "system",
+    senderId: actionId,
+    content: "Approval required for send_email. Review the request and approve it in this chat.",
+  })));
+}
+
+async function setApprovalStatus(userId: string, actionId: string, status: "completed" | "cancelled"): Promise<void> {
+  "use step";
+  await runService(withStore((store) => store.setPendingActionStatus(userId, actionId, status)));
+}
+
+function approvalRequestOf(result: { content: Array<{ type: string; approvalId?: string; input?: unknown }> }): { approvalId: string; summary: string } | null {
+  const request = result.content.find((part) => part.type === "tool-approval-request" && part.approvalId);
+  if (!request?.approvalId) return null;
+  const input = request.input as { to?: unknown; subject?: unknown; text?: unknown } | undefined;
+  const summary = input
+    ? `send_email to ${String(input.to ?? "recipient")}\nSubject: ${String(input.subject ?? "(no subject)")}\n\n${String(input.text ?? "")}`
+    : "send_email";
+  return { approvalId: request.approvalId, summary };
+}
+
+async function loadBotTools(userId: string): Promise<LoadedTool[]> {
   "use step";
   return runService(Effect.gen(function* () {
     const mcp = yield* McpService;
     const store = yield* StoreService;
+    const connections = yield* fromPromise(() => store.listIntegrations(userId));
+    const integrationIds = connections.map((connection) => connection.id);
     const groups = yield* fromPromise(() => Promise.all(
       integrationIds.slice(0, 10).map(async (integrationId) => {
         try {

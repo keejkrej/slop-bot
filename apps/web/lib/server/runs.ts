@@ -6,7 +6,7 @@ import { ApiError } from "./http";
 import { isGatewayConfigured } from "./auth";
 import { fromPromise, withStore, StoreService, type AppEffect } from "./effect";
 
-export function startGroupRun(userId: string, conversationId: string): AppEffect<RunAccepted, StoreService> {
+export function startGroupRun(userId: string, conversationId: string, options: { resumeActionId?: string } = {}): AppEffect<RunAccepted, StoreService> {
   return Effect.gen(function* () {
     const store = yield* StoreService;
     const conversation = yield* fromPromise(() => store.getConversation(userId, conversationId));
@@ -21,6 +21,7 @@ export function startGroupRun(userId: string, conversationId: string): AppEffect
         conversationId,
         botIds: conversation.botIds,
         useGateway: isGatewayConfigured(),
+        ...options,
       }]);
       await store.setConversationRun(userId, conversationId, run.runId, "running");
       return { runId: run.runId, status: "running" as const };

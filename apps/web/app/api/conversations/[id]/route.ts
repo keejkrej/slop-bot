@@ -6,12 +6,13 @@ export function GET(request: Request, context: { params: Promise<{ id: string }>
   return runApp(Effect.gen(function* () {
     const user = yield* authenticate(request);
     const { id } = yield* fromParams(context.params);
-    const [conversation, messages] = yield* withStore((store) => Promise.all([
+    const [conversation, messages, pendingActions] = yield* withStore((store) => Promise.all([
       store.getConversation(user.id, id),
       store.listMessages(user.id, id),
+      store.listPendingActions(user.id, id),
     ]));
     if (!conversation) return yield* Effect.fail(new ApiError(404, "Conversation not found."));
-    return Response.json({ conversation, messages });
+    return Response.json({ conversation, messages, pendingActions });
   }));
 }
 

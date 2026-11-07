@@ -31,6 +31,22 @@ describe("FileStore", () => {
     expect(JSON.stringify(await reloaded.listIntegrations("demo-user"))).not.toContain("not-plaintext");
   });
 
+  it("persists and completes signed approval state", async () => {
+    const store = await makeStore();
+    const action = await store.createPendingAction({
+      userId: "demo-user",
+      conversationId: "conv_1",
+      botId: "bot_1",
+      kind: "tool_approval",
+      summary: "send_email to owner@example.com",
+      modelMessages: [{ role: "user", content: "Send it" }],
+    });
+    expect(action.status).toBe("pending");
+    expect((await store.listPendingActions("demo-user", "conv_1"))[0]?.summary).toContain("owner@example.com");
+    await store.setPendingActionStatus("demo-user", action.id, "completed");
+    expect(await store.listPendingActions("demo-user", "conv_1")).toHaveLength(0);
+  });
+
   it("expires OAuth state and completes a desktop job once", async () => {
     const store = await makeStore();
     const job = await store.createDesktopJob({ userId: "demo-user", deviceId: "device-123456", integrationId: "integration", toolName: "read", args: {} });

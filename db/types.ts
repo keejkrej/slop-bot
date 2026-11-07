@@ -20,6 +20,20 @@ export type NewIntegration = Pick<
 > &
   Partial<Pick<Integration, "toolCount" | "lastError">>;
 
+export type PendingAction = {
+  id: string;
+  userId: string;
+  conversationId: string;
+  botId: string;
+  kind: "tool_approval";
+  summary: string;
+  modelMessages: unknown;
+  status: "pending" | "completed" | "cancelled";
+  createdAt: string;
+};
+
+export type NewPendingAction = Omit<PendingAction, "id" | "status" | "createdAt">;
+
 export type DesktopJobStatus = "pending" | "completed" | "failed" | "expired";
 
 export type DesktopJob = {
@@ -89,4 +103,9 @@ export interface AppStore {
     jobId: string,
     result: { ok: boolean; output?: unknown; error?: string },
   ): Promise<DesktopJob | null>;
+
+  createPendingAction(input: NewPendingAction): Promise<PendingAction>;
+  getPendingAction(userId: string, actionId: string): Promise<PendingAction | null>;
+  listPendingActions(userId: string, conversationId: string): Promise<PendingAction[]>;
+  setPendingActionStatus(userId: string, actionId: string, status: PendingAction["status"]): Promise<void>;
 }

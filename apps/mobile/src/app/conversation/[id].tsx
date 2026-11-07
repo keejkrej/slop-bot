@@ -63,6 +63,13 @@ export default function ConversationScreen() {
     finally { setBusy(false); }
   }
 
+  async function approve(actionId: string, approved: boolean) {
+    setBusy(true); setError(undefined);
+    try { await api(`/api/conversations/${id}/approvals/${actionId}`, { method: 'POST', body: JSON.stringify({ approved }) }); await load(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not update approval.'); }
+    finally { setBusy(false); }
+  }
+
   return (
     <Screen scroll={false}>
       <KeyboardAvoidingView className="flex-1" style={{ flex: 1 }}>
@@ -98,6 +105,7 @@ export default function ConversationScreen() {
               </View>
             }
             ListFooterComponent={<>
+              {detail.pendingActions.map((action) => <View className="border border-border bg-muted p-4" key={action.id}><Text className="mb-2 text-[10px] uppercase tracking-[1px] text-muted-foreground">Approval required</Text><Text className="mb-4 text-xs leading-5">{action.summary}</Text><View className="flex-row gap-3"><Button disabled={busy} onPress={() => void approve(action.id, true)} size="sm"><Text>Approve send</Text></Button><Button disabled={busy} onPress={() => void approve(action.id, false)} size="sm" variant="ghost"><Text>Deny</Text></Button></View></View>)}
               {running ? <View className="flex-row items-center gap-2"><ActivityIndicator size="small" /><Text className="text-xs text-muted-foreground">Bots are responding in sequence…</Text></View> : null}
               {error ? <Text className="text-xs text-destructive">{error}</Text> : null}
             </>}
