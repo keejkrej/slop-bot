@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { Bootstrap } from '@slopbot/contracts';
 import { api, setMobileAccessToken } from './api';
-import { authConfigured, getSupabase } from './supabase';
+import { clearVercelSession, restoreVercelSession } from './vercel-auth';
 
 type AppState = {
   data?: Bootstrap;
@@ -22,32 +22,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const refresh = useCallback(async () => {
     setError(undefined);
-    try { setData(await api<Bootstrap>('/api/bootstrap')); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load workspace.'); }
-    finally { setLoading(false); }
+    try {
+      setData(await api<Bootstrap>('/api/bootstrap'));
+      setSignedOut(false);
+    } catch (cause) {
+      const status = (cause as { status?: number }).status;
+      if (status === 401) setSignedOut(true);
+      setError(cause instanceof Error ? cause.message : 'Could not load workspace.');
+    } finally { setLoading(false); }
   }, []);
 
-  useEffect(() => {
-    if (!authConfigured()) { setMobileAccessToken(null); void refresh(); return; }
-    const supabase = getSupabase();
-    void supabase.auth.getSession().then(({ data: auth }) => {
-      const token = auth.session?.access_token ?? null;
-      setMobileAccessToken(token);
-      setSignedOut(!token);
-      setLoading(false);
-      if (token) void refresh();
-    });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      const token = session?.access_token ?? null;
-      setMobileAccessToken(token);
-      setSignedOut(!token);
-      if (token) void refresh(); else setData(undefined);
-    });
-    return () => listener.subscription.unsubscribe();
-  }, [refresh]);
+  useEffect(() => { void restoreVercelSession().then(refresh); }, [refresh]);
 
   const signOut = useCallback(async () => {
-    if (authConfigured()) await getSupabase().auth.signOut();
+    await clearVercelSession();
     setMobileAccessToken(null);
     setData(undefined);
     setSignedOut(true);

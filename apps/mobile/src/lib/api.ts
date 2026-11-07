@@ -23,6 +23,10 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (accessToken) headers.set('authorization', `Bearer ${accessToken}`);
   const response = await fetch(`${apiUrl()}${path}`, { ...init, headers });
   const payload = await response.json().catch(() => null) as { error?: string } | null;
-  if (!response.ok) throw new Error(payload?.error ?? `Request failed (${response.status}). Is the web API running at ${apiUrl()}?`);
+  if (!response.ok) {
+    const error = new Error(payload?.error ?? `Request failed (${response.status}). Is the web API running at ${apiUrl()}?`) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
   return payload as T;
 }

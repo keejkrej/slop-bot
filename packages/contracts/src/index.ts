@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const DEFAULT_MODEL = "openai/gpt-6-luna-fast";
+export const DEFAULT_MODEL = "anthropic/claude-sonnet-5.5";
 export const MAX_GROUP_BOTS = 4;
 
 export const botSchema = z.object({

@@ -7,7 +7,7 @@ A single-tenant personal bot club for Android, web, and desktop. Create custom b
 - **Web:** Next.js 16, React, shadcn/ui `base-lyra`, Base UI, Tailwind.
 - **Android:** Expo SDK 57, Expo Router, React Native Reusables, NativeWind.
 - **Shared design:** `@slopbot/design-tokens` supplies Lyra's neutral palette, monospace type, square geometry, spacing, and semantic tokens to every client.
-- **Agents:** AI SDK 7 `WorkflowAgent` (the durable `ToolLoopAgent` counterpart), Vercel AI Gateway, and Vercel Workflows.
+- **Agents:** AI SDK 7 `WorkflowAgent` (the durable `ToolLoopAgent` counterpart), Vercel AI Gateway with `anthropic/claude-sonnet-5.5` as the default model, and Vercel Workflows.
 - **Persistence:** Drizzle + Postgres in production; an atomic file store for zero-setup local development.
 - **Connections:** custom Streamable HTTP MCP, OAuth discovery + dynamic client registration + PKCE, GitHub remote MCP, and Composio user-scoped hosted MCP sessions.
 - **Desktop:** Electrobun with the native system webview (WKWebView, WebView2, or WebKitGTK). Its outbound bridge reaches MCP servers on your computer without opening an inbound cloud-accessible port.
@@ -66,7 +66,7 @@ The desktop window manages local MCP servers. **Open web app** opens the shared 
 
 ### 1. Database
 
-Create a Postgres database (Supabase works well), then set:
+Create a Neon Postgres database (any compatible Postgres provider also works), then set:
 
 ```dotenv
 DATABASE_URL=postgresql://...
@@ -81,19 +81,25 @@ pnpm db:migrate
 
 Do not deploy with the file store; Vercel's filesystem is not durable application storage.
 
-### 2. Single-tenant Google login
+### 2. Single-tenant Vercel login
 
-Create a Supabase project and enable **Google** under Auth → Providers. Configure Google OAuth with the Supabase callback URL shown in the dashboard. Set:
+Create a Vercel App under **Team Settings → Apps**. Enable `openid`, `email`, `profile`, and `offline_access`, restrict Sign-In Access to your team, and register both callbacks:
 
-```dotenv
-NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon-key>
-EXPO_PUBLIC_SUPABASE_URL=<same-project-url>
-EXPO_PUBLIC_SUPABASE_ANON_KEY=<same-anon-key>
-ALLOWED_EMAIL=you@example.com
+```text
+http://localhost:3000/api/auth/callback/vercel
+https://your-app.vercel.app/api/auth/callback/vercel
 ```
 
-Only `ALLOWED_EMAIL` can use the production API. Local development bypasses login only when Supabase variables are absent. Email magic links are also available. GitHub sign-in is not needed for app authentication; GitHub remains available as an MCP tool connection.
+Set the app's credentials and the Vercel user ID allowed to use this deployment. `BETTER_AUTH_SECRET` signs the app's own web/mobile sessions; generate it with `openssl rand -base64 32` if it wasn't provisioned by the Vercel app setup.
+
+```dotenv
+VERCEL_APP_CLIENT_ID=<vercel-app-client-id>
+VERCEL_APP_CLIENT_SECRET=<vercel-app-client-secret>
+BETTER_AUTH_SECRET=<random-32-byte-secret>
+ALLOWED_USER_ID=<your-vercel-user-id>
+```
+
+You can find the user ID with `vercel api /v2/user`. Web uses an HTTP-only signed cookie; Android stores its signed session in Expo SecureStore. The OAuth flow uses PKCE, state, and nonce validation. Local development bypasses login without weakening production checks.
 
 ### 3. Agents
 
@@ -131,11 +137,11 @@ Composio sessions are created with the signed-in user's ID. Session headers are 
 
 ### 5. Desktop pairing
 
-Set a high-entropy pairing token and your Supabase Auth user UUID:
+Set a high-entropy pairing token and your Vercel user ID:
 
 ```dotenv
 DESKTOP_PAIRING_TOKEN=<openssl rand -hex 32>
-DESKTOP_USER_ID=<supabase-auth-user-uuid>
+DESKTOP_USER_ID=<vercel-user-id>
 ```
 
 In the signed-in web app, open **Connections → Desktop setup** to copy the token. Paste it into the desktop app's Pairing panel and use your deployed `APP_URL`. The desktop then:
@@ -156,9 +162,10 @@ Required production environment:
 
 - `DATABASE_URL`
 - `TOKEN_ENCRYPTION_KEY`
-- `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-- `ALLOWED_EMAIL`
+- `VERCEL_APP_CLIENT_ID`
+- `VERCEL_APP_CLIENT_SECRET`
+- `BETTER_AUTH_SECRET`
+- `ALLOWED_USER_ID`
 - `APP_URL`
 - AI Gateway OIDC access or `AI_GATEWAY_API_KEY`
 
