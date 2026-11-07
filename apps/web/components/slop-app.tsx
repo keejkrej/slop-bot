@@ -4,8 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ChatsCircleIcon, PlugsConnectedIcon, PlusIcon, RobotIcon, SignOutIcon } from "@phosphor-icons/react";
 import { lyra } from "@slopbot/design-tokens";
 import type { Bootstrap } from "@slopbot/contracts";
-import { api, getBootstrap, setWebAccessToken } from "@/lib/client/api";
-import { getSupabase, isAuthConfigured } from "@/lib/client/supabase";
+import { getBootstrap } from "@/lib/client/api";
 import { AuthScreen, LogoMark } from "./auth-screen";
 import { BotsView } from "./bots-view";
 import { ChatView } from "./chat-view";
@@ -40,33 +39,10 @@ export function SlopApp() {
   }, []);
 
   useEffect(() => {
-    if (!isAuthConfigured()) {
-      setWebAccessToken(null);
-      void reload();
-      return;
-    }
-    const supabase = getSupabase();
-    let mounted = true;
-    void supabase.auth.getSession().then(({ data: auth }) => {
-      if (!mounted) return;
-      const token = auth.session?.access_token ?? null;
-      setWebAccessToken(token);
-      setSignedOut(!token);
-      setAuthChecked(true);
-      if (token) void reload();
-    });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      const token = session?.access_token ?? null;
-      setWebAccessToken(token);
-      setSignedOut(!token);
-      setAuthChecked(true);
-      if (token) void reload();
-      else setData(undefined);
-    });
-    return () => {
-      mounted = false;
-      listener.subscription.unsubscribe();
-    };
+    void fetch("/api/auth/session").then(async (response) => {
+      if (response.ok) await reload();
+      else { setSignedOut(true); setAuthChecked(true); }
+    }).catch(() => setAuthChecked(true));
   }, [reload]);
 
   function navigate(next: View) {
@@ -76,12 +52,12 @@ export function SlopApp() {
   }
 
   async function signOut() {
-    await getSupabase().auth.signOut();
-    setWebAccessToken(null);
+    await fetch("/api/auth/signout", { method: "POST" });
     setData(undefined);
+    setSignedOut(true);
   }
 
-  if (!authChecked || (isAuthConfigured() && signedOut)) return signedOut ? <AuthScreen /> : <LoadingScreen />;
+  if (!authChecked || signedOut) return signedOut ? <AuthScreen /> : <LoadingScreen />;
   if (!data) return <LoadingScreen error={error} retry={() => void reload()} />;
 
   return (
@@ -94,7 +70,7 @@ export function SlopApp() {
           onConversation={(id) => { setSelectedId(id); navigate("chat"); }}
           onNavigate={navigate}
           onDialog={setDialog}
-          onSignOut={isAuthConfigured() ? () => void signOut() : undefined}
+          onSignOut={data.user.id !== "demo-user" ? () => void signOut() : undefined}
         />
       </aside>
 
