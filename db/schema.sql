@@ -59,6 +59,18 @@ create table if not exists oauth_states (
 );
 create index if not exists oauth_states_expires_idx on oauth_states(expires_at);
 
+create table if not exists pending_actions (
+  id text primary key,
+  user_id text not null,
+  conversation_id text not null,
+  bot_id text not null,
+  kind text not null,
+  summary text not null,
+  model_messages jsonb not null,
+  status text not null default 'pending',
+  created_at timestamptz not null default now()
+);
+
 create table if not exists desktop_jobs (
   id text primary key,
   user_id text not null,

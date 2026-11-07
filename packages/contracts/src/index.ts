@@ -97,6 +97,14 @@ export const bootstrapSchema = z.object({
 export const conversationDetailSchema = z.object({
   conversation: conversationSchema,
   messages: z.array(messageSchema),
+  pendingActions: z.array(z.object({
+    id: z.string(),
+    botId: z.string(),
+    kind: z.literal("tool_approval"),
+    summary: z.string(),
+    status: z.enum(["pending", "completed", "cancelled"]),
+    createdAt: z.string(),
+  })).default([]),
 });
 
 export const connectResponseSchema = z.object({

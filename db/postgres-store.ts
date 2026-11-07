@@ -12,8 +12,8 @@ import {
   type User,
 } from "@slopbot/contracts";
 import { decryptSecret, encryptSecret } from "./crypto";
-import { bots, conversations, desktopJobs, integrations, messages, oauthStates, toBot } from "./schema";
-import type { AppStore, DesktopJob, NewDesktopJob, NewIntegration, NewMessage, OAuthState } from "./types";
+import { bots, conversations, desktopJobs, integrations, messages, oauthStates, pendingActions, toBot } from "./schema";
+import type { AppStore, DesktopJob, NewDesktopJob, NewIntegration, NewMessage, NewPendingAction, OAuthState, PendingAction } from "./types";
 
 const iso = (value: string) => new Date(value).toISOString();
 
@@ -187,6 +187,30 @@ export class PostgresStore implements AppStore {
     }).where(and(eq(desktopJobs.userId, userId), eq(desktopJobs.id, jobId), eq(desktopJobs.status, "pending"))).returning();
     return row ? toDesktopJob(row) : null;
   }
+
+  async createPendingAction(input: NewPendingAction): Promise<PendingAction> {
+    const [row] = await this.db.insert(pendingActions).values({ ...input, id: `approval_${crypto.randomUUID()}` }).returning();
+    if (!row) throw new Error("Could not create approval.");
+    return toPendingAction(row);
+  }
+
+  async getPendingAction(userId: string, actionId: string): Promise<PendingAction | null> {
+    const [row] = await this.db.select().from(pendingActions).where(and(eq(pendingActions.userId, userId), eq(pendingActions.id, actionId))).limit(1);
+    return row ? toPendingAction(row) : null;
+  }
+
+  async listPendingActions(userId: string, conversationId: string): Promise<PendingAction[]> {
+    const rows = await this.db.select().from(pendingActions).where(and(
+      eq(pendingActions.userId, userId),
+      eq(pendingActions.conversationId, conversationId),
+      eq(pendingActions.status, "pending"),
+    )).orderBy(pendingActions.createdAt);
+    return rows.map(toPendingAction);
+  }
+
+  async setPendingActionStatus(userId: string, actionId: string, status: PendingAction["status"]): Promise<void> {
+    await this.db.update(pendingActions).set({ status }).where(and(eq(pendingActions.userId, userId), eq(pendingActions.id, actionId)));
+  }
 }
 
 function toConversation(row: typeof conversations.$inferSelect): Conversation {
@@ -210,6 +234,20 @@ function toMessage(row: typeof messages.$inferSelect): ChatMessage {
     content: row.content,
     status: row.status as ChatMessage["status"],
     error: row.error,
+    createdAt: iso(row.createdAt),
+  };
+}
+
+function toPendingAction(row: typeof pendingActions.$inferSelect): PendingAction {
+  return {
+    id: row.id,
+    userId: row.userId,
+    conversationId: row.conversationId,
+    botId: row.botId,
+    kind: row.kind as PendingAction["kind"],
+    summary: row.summary,
+    modelMessages: row.modelMessages,
+    status: row.status as PendingAction["status"],
     createdAt: iso(row.createdAt),
   };
 }

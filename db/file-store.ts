@@ -13,7 +13,7 @@ import {
   type User,
 } from "@slopbot/contracts";
 import { decryptSecret, encryptSecret } from "./crypto";
-import type { AppStore, DesktopJob, NewDesktopJob, NewIntegration, NewMessage, OAuthState } from "./types";
+import type { AppStore, DesktopJob, NewDesktopJob, NewIntegration, NewMessage, NewPendingAction, OAuthState, PendingAction } from "./types";
 
 type FileState = {
   bots: Array<Bot & { userId: string }>;
@@ -23,6 +23,7 @@ type FileState = {
   secrets: Record<string, string>;
   oauthStates: OAuthState[];
   desktopJobs: DesktopJob[];
+  pendingActions: PendingAction[];
 };
 
 const now = () => new Date().toISOString();
@@ -42,6 +43,7 @@ export class FileStore implements AppStore {
     try {
       this.state = JSON.parse(await readFile(this.file, "utf8")) as FileState;
       this.state.desktopJobs ??= [];
+      this.state.pendingActions ??= [];
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const createdAt = now();
@@ -87,6 +89,7 @@ export class FileStore implements AppStore {
         secrets: {},
         oauthStates: [],
         desktopJobs: [],
+        pendingActions: [],
       };
       await this.persist();
     }
@@ -340,6 +343,36 @@ export class FileStore implements AppStore {
       job.output = result.output ?? null;
       job.error = result.error ?? null;
       return job;
+    });
+  }
+
+  async createPendingAction(input: NewPendingAction): Promise<PendingAction> {
+    return this.commit((state) => {
+      const action: PendingAction = {
+        ...input,
+        id: `approval_${randomUUID()}`,
+        status: "pending",
+        createdAt: now(),
+      };
+      state.pendingActions.push(action);
+      return action;
+    });
+  }
+
+  async getPendingAction(userId: string, actionId: string): Promise<PendingAction | null> {
+    return (await this.load()).pendingActions.find((action) => action.userId === userId && action.id === actionId) ?? null;
+  }
+
+  async listPendingActions(userId: string, conversationId: string): Promise<PendingAction[]> {
+    return (await this.load()).pendingActions.filter(
+      (action) => action.userId === userId && action.conversationId === conversationId && action.status === "pending",
+    );
+  }
+
+  async setPendingActionStatus(userId: string, actionId: string, status: PendingAction["status"]): Promise<void> {
+    await this.commit((state) => {
+      const action = state.pendingActions.find((item) => item.userId === userId && item.id === actionId);
+      if (action) action.status = status;
     });
   }
 }

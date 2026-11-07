@@ -59,6 +59,18 @@ export const oauthStates = pgTable("oauth_states", {
   expiresAt: timestamp("expires_at", { withTimezone: true, mode: "string" }).notNull(),
 });
 
+export const pendingActions = pgTable("pending_actions", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  botId: text("bot_id").notNull(),
+  kind: text("kind").notNull(),
+  summary: text("summary").notNull(),
+  modelMessages: jsonb("model_messages").notNull(),
+  status: text("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+});
+
 export const desktopJobs = pgTable("desktop_jobs", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull(),

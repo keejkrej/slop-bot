@@ -55,6 +55,15 @@ export function ChatView({ conversationId, bots, onRefresh, onCreateGroup }: { c
     finally { setBusy(false); }
   }
 
+  async function approve(actionId: string, approved: boolean) {
+    setBusy(true); setError(undefined);
+    try {
+      await api(`/api/conversations/${conversationId}/approvals/${actionId}`, { method: "POST", body: JSON.stringify({ approved }) });
+      await load(); void onRefresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update approval."); }
+    finally { setBusy(false); }
+  }
+
   if (!detail) return <main className="grid h-[calc(100dvh-7rem)] place-items-center"><Spinner /></main>;
   const participants = detail.conversation.botIds.map((id) => bots.find((bot) => bot.id === id)).filter((bot): bot is Bot => Boolean(bot));
 
@@ -69,6 +78,7 @@ export function ChatView({ conversationId, bots, onRefresh, onCreateGroup }: { c
       <div className="mx-auto max-w-3xl px-4 py-6 sm:px-6 sm:py-10">
         {detail.messages.length === 0 ? <div className="py-16 text-center"><div className="mb-5 flex justify-center">{participants.map((bot) => <div className="-ml-1.5 grid size-10 place-items-center border-2 border-background text-sm text-white first:ml-0" key={bot.id} style={{ backgroundColor: bot.color }}>{bot.name[0]}</div>)}</div><h2 className="text-xl tracking-[-0.05em]">The floor is yours.</h2><p className="mx-auto mt-3 max-w-sm text-muted-foreground text-xs leading-relaxed">Ask a question, or start a bot round and let each participant respond once in order.</p><Button className="mt-6" disabled={busy} onClick={() => void botRound()} variant="outline"><UsersThreeIcon /> Start bot round</Button></div> : null}
         <div className="space-y-7">{detail.messages.map((message) => <MessageBubble bots={bots} key={message.id} message={message} />)}</div>
+        {detail.pendingActions.map((action) => <section className="my-7 border border-border bg-muted p-4" key={action.id}><p className="mb-2 text-[10px] text-muted-foreground uppercase tracking-widest">Approval required</p><p className="message-text mb-4 text-xs leading-6">{action.summary}</p><div className="flex gap-2"><Button disabled={busy} onClick={() => void approve(action.id, true)} size="sm" variant="default">Approve send</Button><Button disabled={busy} onClick={() => void approve(action.id, false)} size="sm" variant="ghost">Deny</Button></div></section>)}
         {running ? <div className="mt-7 flex items-center gap-3 text-muted-foreground text-xs"><span className="flex gap-1"><i className="size-1 animate-pulse bg-current" /><i className="size-1 animate-pulse bg-current [animation-delay:150ms]" /><i className="size-1 animate-pulse bg-current [animation-delay:300ms]" /></span>Bots are responding in sequence…</div> : null}
         {error ? <p className="mt-6 border-l-2 border-destructive pl-3 text-destructive text-xs" role="alert">{error}</p> : null}
         <div ref={endRef} />
