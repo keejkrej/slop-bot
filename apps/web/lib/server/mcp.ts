@@ -34,6 +34,22 @@ export type McpToolDefinition = {
   readOnly: boolean;
 };
 
+const READ_VERBS = /(?:^|_)(?:GET|LIST|SEARCH|FETCH|FIND|READ|QUERY|DESCRIBE|SHOW|VIEW|LOOKUP|PULL|CHECK|INFO|HISTORY)(?:_|$)/i;
+const COMPOSIO_EXECUTE_TOOL = "COMPOSIO_EXECUTE_TOOL";
+
+export function isReadOnlyToolName(name: string): boolean {
+  return READ_VERBS.test(name) || ["COMPOSIO_MANAGE_CONNECTIONS", COMPOSIO_EXECUTE_TOOL].includes(name);
+}
+
+export function assertMcpCallAllowed(tool: McpToolDefinition, args: Record<string, unknown>): void {
+  if (!tool.readOnly) throw new Error("Write tools are blocked until per-call approval is enabled.");
+  if (tool.name !== COMPOSIO_EXECUTE_TOOL) return;
+  const slug = args.tool_slug ?? args.toolSlug ?? args.tool_name ?? args.toolName;
+  if (typeof slug !== "string" || !isReadOnlyToolName(slug)) {
+    throw new Error("Composio can only execute read operations through this connection.");
+  }
+}
+
 export async function validateMcpUrl(value: string): Promise<string> {
   let url: URL;
   try {
@@ -276,7 +292,8 @@ export async function listMcpTools(userId: string, integrationId: string): Promi
       name: tool.name,
       description: tool.description ?? `Call ${tool.name} on ${integration.name}.`,
       inputSchema: tool.inputSchema as Record<string, unknown>,
-      readOnly: tool.annotations?.readOnlyHint === true,
+      readOnly: tool.annotations?.readOnlyHint === true ||
+        (tool.annotations?.destructiveHint !== true && isReadOnlyToolName(tool.name)),
     }));
   });
   return result.value ?? [];
@@ -293,7 +310,7 @@ export async function callMcpTool(
   const tools = await listMcpTools(userId, integrationId);
   const tool = tools.find((item) => item.name === toolName);
   if (!tool) throw new Error("The MCP tool no longer exists.");
-  if (!tool.readOnly) throw new Error("Write tools are blocked until per-call approval is enabled.");
+  assertMcpCallAllowed(tool, args);
   const result = await withClient(integration, userId, "web", undefined, (client) =>
     client.callTool({ name: toolName, arguments: args }, undefined, { timeout: 45_000 }),
   );

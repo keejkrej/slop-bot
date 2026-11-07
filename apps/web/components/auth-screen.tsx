@@ -11,7 +11,7 @@ export function AuthScreen() {
         <p className="mb-2 text-muted-foreground text-xs uppercase tracking-widest">Your personal bot club</p>
         <h1 className="mb-4 text-3xl leading-tight tracking-[-0.06em]">Sign in with Vercel.</h1>
         <p className="mb-8 text-muted-foreground text-xs leading-relaxed">Single-tenant access. Only the Vercel account approved by this deployment can continue.</p>
-        <Button className="w-full" onClick={() => window.location.assign("/api/auth/vercel?platform=web")} type="button" variant="default">
+        <Button className="w-full" onClick={() => window.location.assign("/api/auth/vercel?platform=web")} type="button" variant="outline">
           <TriangleIcon weight="fill" /> Continue with Vercel
         </Button>
       </section>
