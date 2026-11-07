@@ -36,14 +36,37 @@ export type McpToolDefinition = {
 
 const READ_VERBS = /(?:^|_)(?:GET|LIST|SEARCH|FETCH|FIND|READ|QUERY|DESCRIBE|SHOW|VIEW|LOOKUP|PULL|CHECK|INFO|HISTORY)(?:_|$)/i;
 const COMPOSIO_EXECUTE_TOOL = "COMPOSIO_EXECUTE_TOOL";
+const COMPOSIO_MULTI_EXECUTE_TOOL = "COMPOSIO_MULTI_EXECUTE_TOOL";
+const COMPOSIO_EXECUTE_TOOLS = new Set([COMPOSIO_EXECUTE_TOOL, COMPOSIO_MULTI_EXECUTE_TOOL]);
 
 export function isReadOnlyToolName(name: string): boolean {
-  return READ_VERBS.test(name) || ["COMPOSIO_MANAGE_CONNECTIONS", COMPOSIO_EXECUTE_TOOL].includes(name);
+  return READ_VERBS.test(name) || ["COMPOSIO_MANAGE_CONNECTIONS", ...COMPOSIO_EXECUTE_TOOLS].includes(name);
 }
 
 export function assertMcpCallAllowed(tool: McpToolDefinition, args: Record<string, unknown>): void {
   if (!tool.readOnly) throw new Error("Write tools are blocked until per-call approval is enabled.");
-  if (tool.name !== COMPOSIO_EXECUTE_TOOL) return;
+  if (!COMPOSIO_EXECUTE_TOOLS.has(tool.name)) {
+    if (tool.name === "COMPOSIO_MANAGE_CONNECTIONS") {
+      const items = Array.isArray(args.toolkits) ? args.toolkits : [];
+      const disallowed = items.some((item) => {
+        const action = (item as { action?: string }).action ?? "add";
+        return action !== "add" && action !== "list";
+      });
+      if (disallowed) throw new Error("Only adding and listing Composio connections is allowed.");
+    }
+    return;
+  }
+  if (tool.name === COMPOSIO_MULTI_EXECUTE_TOOL) {
+    const calls = Array.isArray(args.tools) ? args.tools : [];
+    if (calls.length === 0) throw new Error("Composio multi-execute needs at least one tool call.");
+    for (const call of calls) {
+      const slug = (call as { tool_slug?: unknown }).tool_slug;
+      if (typeof slug !== "string" || !isReadOnlyToolName(slug)) {
+        throw new Error("Composio can only execute read operations through this connection.");
+      }
+    }
+    return;
+  }
   const slug = args.tool_slug ?? args.toolSlug ?? args.tool_name ?? args.toolName;
   if (typeof slug !== "string" || !isReadOnlyToolName(slug)) {
     throw new Error("Composio can only execute read operations through this connection.");
@@ -292,7 +315,8 @@ export async function listMcpTools(userId: string, integrationId: string): Promi
       name: tool.name,
       description: tool.description ?? `Call ${tool.name} on ${integration.name}.`,
       inputSchema: tool.inputSchema as Record<string, unknown>,
-      readOnly: tool.annotations?.readOnlyHint === true ||
+      readOnly: COMPOSIO_EXECUTE_TOOLS.has(tool.name) || tool.name === "COMPOSIO_MANAGE_CONNECTIONS" ||
+        tool.annotations?.readOnlyHint === true ||
         (tool.annotations?.destructiveHint !== true && isReadOnlyToolName(tool.name)),
     }));
   });
