@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Slop Bot Desktop</title>
+  <link rel="stylesheet" href="index.css" />
+</head>
+<body>
+  <main class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="mark">▦</span> SLOP BOT <small>DESKTOP</small></div>
+      <p class="side-copy">Local tools.<br />Same bots. No open ports.</p>
+      <button id="open-web" class="primary">Open web app ↗</button>
+      <p class="hint">The web app opens in a separate sandboxed system webview.</p>
+      <div class="status"><span id="status-dot"></span><span id="status-text">OFFLINE</span></div>
+    </aside>
+    <section class="content">
+      <header><p class="eyebrow">LOCAL MCP</p><h1>This computer.</h1><p>Connect MCP servers running locally. Their ports stay private; only approved read-only calls travel through your authenticated outbound bridge.</p></header>
+      <section class="panel pairing">
+        <div class="panel-title"><h2>Pairing</h2><span id="paired-badge">NOT PAIRED</span></div>
+        <label>API URL<input id="api-url" type="url" spellcheck="false" /></label>
+        <label>PAIRING TOKEN<input id="token" type="password" placeholder="Paste from Web → Connections → Desktop setup" autocomplete="off" /></label>
+        <button id="save-settings" class="secondary">Save & sync</button>
+      </section>
+      <section class="panel">
+        <div class="panel-title"><h2>Local servers</h2><span id="server-count">0</span></div>
+        <form id="add-server">
+          <input id="server-name" aria-label="Server name" placeholder="Paper Design" required minlength="2" />
+          <input id="server-url" aria-label="Server MCP URL" type="url" placeholder="http://127.0.0.1:3030/mcp" required />
+          <button class="primary" type="submit">Add & discover</button>
+        </form>
+        <div id="servers" class="servers"></div>
+      </section>
+      <p id="message" class="message" role="status"></p>
+    </section>
+  </main>
+  <script src="index.js"></script>
+</body>
+</html>
