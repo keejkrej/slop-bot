@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import { fromPromise, runApp } from "@/lib/server/effect";
 import { finishVercelSignIn, sessionCookie } from "@/lib/server/vercel-auth";
+import { absoluteAppUrl } from "@/lib/server/http";
 
 export function GET(request: Request): Promise<Response> {
   return runApp(Effect.gen(function* () {
@@ -10,7 +11,7 @@ export function GET(request: Request): Promise<Response> {
     }
     return new Response(null, {
       status: 302,
-      headers: { location: "/", "set-cookie": sessionCookie(result.token) },
+      headers: { location: absoluteAppUrl(request, "/"), "set-cookie": sessionCookie(result.token) },
     });
   }));
 }

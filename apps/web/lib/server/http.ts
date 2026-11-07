@@ -34,6 +34,10 @@ export function errorResponse(error: unknown): Response {
   );
 }
 
+export function absoluteAppUrl(request: Request, target: string): string {
+  return new URL(target, `${appUrl(request)}/`).toString();
+}
+
 export function appUrl(request?: Request): string {
   return (process.env.APP_URL ?? (request ? new URL(request.url).origin : "http://localhost:3000")).replace(/\/$/, "");
 }
