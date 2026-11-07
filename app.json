@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "89cdd1a5-0c80-4e2e-8c2c-1c1dec789e54"
+      }
+    },
+    "android": {
+      "package": "com.keejkrej.slopbot"
+    }
+  }
+}
