@@ -1,0 +1,70 @@
+export const palette = {
+  white: "#ffffff",
+  neutral50: "#fafafa",
+  neutral100: "#f5f5f5",
+  neutral200: "#e5e5e5",
+  neutral300: "#d4d4d4",
+  neutral400: "#a1a1a1",
+  neutral500: "#737373",
+  neutral600: "#525252",
+  neutral700: "#3f3f3f",
+  neutral800: "#262626",
+  neutral900: "#171717",
+  neutral950: "#0a0a0a",
+  red600: "#dc2626",
+  red400: "#f87171",
+} as const;
+
+export const theme = {
+  light: {
+    background: palette.white,
+    foreground: palette.neutral950,
+    card: palette.white,
+    cardForeground: palette.neutral950,
+    popover: palette.white,
+    popoverForeground: palette.neutral950,
+    primary: palette.neutral900,
+    primaryForeground: palette.neutral50,
+    secondary: palette.neutral100,
+    secondaryForeground: palette.neutral900,
+    muted: palette.neutral100,
+    mutedForeground: palette.neutral500,
+    accent: palette.neutral100,
+    accentForeground: palette.neutral900,
+    destructive: palette.red600,
+    border: palette.neutral200,
+    input: palette.neutral200,
+    ring: palette.neutral400,
+  },
+  dark: {
+    background: palette.neutral950,
+    foreground: palette.neutral50,
+    card: palette.neutral900,
+    cardForeground: palette.neutral50,
+    popover: palette.neutral900,
+    popoverForeground: palette.neutral50,
+    primary: palette.neutral200,
+    primaryForeground: palette.neutral900,
+    secondary: palette.neutral800,
+    secondaryForeground: palette.neutral50,
+    muted: palette.neutral800,
+    mutedForeground: palette.neutral400,
+    accent: palette.neutral800,
+    accentForeground: palette.neutral50,
+    destructive: palette.red400,
+    border: palette.neutral800,
+    input: palette.neutral800,
+    ring: palette.neutral500,
+  },
+} as const;
+
+export const lyra = {
+  preset: "base-lyra",
+  fontFamily: { sans: "Geist Mono", mono: "Geist Mono", native: "monospace" },
+  radius: { none: 0, sm: 0, md: 0, lg: 0, xl: 0, pill: 999 },
+  spacing: { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 },
+  type: { xs: 11, sm: 13, md: 15, lg: 18, xl: 24, display: 32 },
+} as const;
+
+export type ThemeName = keyof typeof theme;
+export type ThemeTokens = (typeof theme)[ThemeName];

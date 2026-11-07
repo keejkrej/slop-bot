@@ -1,0 +1,15 @@
+{
+  "name": "@slopbot/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Slop Bot Electrobun desktop and private local-MCP bridge",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.0"
+  }
+}

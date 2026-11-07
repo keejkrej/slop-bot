@@ -1,0 +1,14 @@
+node_modules
+.env*
+.data
+.swc
+.expo
+.eve
+.next
+.output
+.nitro
+dist
+build
+.hutch
+apps/desktop/build
+apps/mobile/dist
