@@ -59,7 +59,7 @@ export function ChatView({ conversationId, bots, onRefresh, onCreateGroup }: { c
   const participants = detail.conversation.botIds.map((id) => bots.find((bot) => bot.id === id)).filter((bot): bot is Bot => Boolean(bot));
 
   return <main className="flex h-[calc(100dvh-7rem)] min-h-0 flex-col lg:h-dvh">
-    <header className="flex min-h-16 items-center gap-3 border-b px-4 py-3 sm:px-6">
+    <header className="flex h-16 items-center gap-3 border-b px-4 sm:px-6">
       <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h1 className="truncate text-sm font-medium">{detail.conversation.title}</h1><Badge variant={running ? "default" : "secondary"}>{running ? "THINKING" : "READY"}</Badge></div><div className="mt-1.5 flex items-center gap-2 text-[10px] text-muted-foreground"><span>{participants.map((bot) => `@${bot.handle}`).join(" · ")}</span></div></div>
       <Button className="hidden sm:inline-flex" disabled={busy || running} onClick={() => void botRound()} size="sm" variant="outline"><UsersThreeIcon /> Bot round</Button>
       <Button aria-label="New group" onClick={onCreateGroup} size="icon-sm" variant="ghost"><PlusIcon /></Button>
@@ -80,7 +80,7 @@ export function ChatView({ conversationId, bots, onRefresh, onCreateGroup }: { c
 }
 
 function MessageBubble({ message, bots }: { message: ChatMessage; bots: Bot[] }) {
-  if (message.senderType === "user") return <article className="flex justify-end"><div className="max-w-[88%] bg-foreground px-4 py-3 text-background sm:max-w-[80%]"><p className="message-text text-xs leading-relaxed">{message.content}</p><p className="mt-2 text-right text-[9px] opacity-50">YOU</p></div></article>;
+  if (message.senderType === "user") return <article className="flex justify-end"><div className="max-w-[88%] border border-border bg-muted px-4 py-3 text-foreground sm:max-w-[80%]"><p className="message-text text-xs leading-relaxed">{message.content}</p><p className="mt-2 text-right text-[9px] text-muted-foreground">YOU</p></div></article>;
   if (message.senderType === "system") return <p className="border-l-2 border-destructive pl-3 text-muted-foreground text-xs">{message.content}</p>;
   const bot = bots.find((item) => item.id === message.senderId);
   return <article className="flex max-w-[94%] items-start gap-3 sm:max-w-[85%]"><div className="mt-0.5 grid size-8 shrink-0 place-items-center text-white text-xs" style={{ backgroundColor: bot?.color ?? "#737373" }}>{bot?.name.slice(0, 1) ?? "?"}</div><div className="min-w-0"><div className="mb-1.5 flex items-center gap-2"><span className="font-medium text-xs">{bot?.name ?? "Removed bot"}</span><span className="text-[9px] text-muted-foreground">@{bot?.handle ?? "unknown"}</span></div><p className={`message-text text-xs leading-6 ${message.status === "failed" ? "text-destructive" : "text-foreground"}`}>{message.content}</p></div></article>;

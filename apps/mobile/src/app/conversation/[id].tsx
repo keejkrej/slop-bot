@@ -129,9 +129,11 @@ function Message({ message, bots }: { message: ChatMessage; bots: Bot[] }) {
   if (message.senderType === 'user') {
     return (
       <View style={{ alignItems: 'flex-end', width: '100%' }}>
-        <View style={{ backgroundColor: colors.foreground, maxWidth: '88%', paddingHorizontal: 16, paddingVertical: 12 }}>
-          <Text style={{ color: colors.background, fontSize: 12, lineHeight: 20, flexWrap: 'wrap' }}>{message.content}</Text>
-          <Text style={{ color: colors.background, opacity: 0.6, marginTop: 8, textAlign: 'right', fontSize: 9 }}>YOU</Text>
+        <View style={{ backgroundColor: colors.muted,
+          borderColor: colors.border,
+          borderWidth: 1, maxWidth: '88%', paddingHorizontal: 16, paddingVertical: 12 }}>
+          <Text style={{ color: colors.foreground, fontSize: 12, lineHeight: 20, flexWrap: 'wrap' }}>{message.content}</Text>
+          <Text style={{ color: colors.mutedForeground, marginTop: 8, textAlign: 'right', fontSize: 9 }}>YOU</Text>
         </View>
       </View>
     );

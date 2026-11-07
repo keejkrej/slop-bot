@@ -69,12 +69,14 @@ export const integrationSchema = z.object({
 });
 
 export const createIntegrationSchema = z.object({
-  kind: z.enum(["mcp", "github", "composio"]),
+  kind: z.literal("mcp"),
   name: z.string().trim().min(2).max(60).optional(),
   url: z.string().trim().max(2_048).optional(),
   description: z.string().trim().max(500).default(""),
   toolkits: z.array(z.string().trim().min(1).max(60)).max(10).default([]),
   platform: z.enum(["web", "android"]).default("web"),
+  headerName: z.string().trim().regex(/^[A-Za-z0-9-]+$/).max(60).optional(),
+  headerValue: z.string().max(4_096).optional(),
 });
 
 export const userSchema = z.object({

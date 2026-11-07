@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { GithubLogoIcon, PlusIcon } from "@phosphor-icons/react";
-import { DEFAULT_MODEL, type Bot, type ConnectResponse, type Conversation, type CreateIntegrationInput, type Integration } from "@slopbot/contracts";
+import { PlusIcon } from "@phosphor-icons/react";
+import { DEFAULT_MODEL, type Bot, type ConnectResponse, type Conversation, type Integration } from "@slopbot/contracts";
 import { api } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -37,7 +37,7 @@ export function BotDialog({ open, onOpenChange, integrations, onCreated }: Dialo
     <Field label="PERSONALITY / INSTRUCTIONS"><Textarea className="min-h-28" maxLength={4000} onChange={(event) => setPersona(event.target.value)} placeholder="You are a direct product strategist. Challenge fuzzy thinking and propose concrete next steps…" required value={persona} /></Field>
     <Field label="AI GATEWAY MODEL"><Input onChange={(event) => setModel(event.target.value)} required value={model} /></Field>
     {integrations.length > 0 ? <fieldset><legend className="mb-2 text-[10px] text-muted-foreground">AVAILABLE CONNECTIONS</legend><div className="max-h-32 space-y-2 overflow-y-auto border p-3">{integrations.map((integration) => <label className="flex cursor-pointer items-center gap-2 text-xs" key={integration.id}><Checkbox checked={integrationIds.includes(integration.id)} onCheckedChange={(checked) => setIntegrationIds((current) => checked ? [...current, integration.id] : current.filter((id) => id !== integration.id))} /><span>{integration.name}</span><span className="ml-auto text-[9px] text-muted-foreground">{integration.status === "connected" ? "READY" : "LOGIN NEEDED"}</span></label>)}</div></fieldset> : null}
-    {error ? <FormError message={error} /> : null}<DialogFooter><Button disabled={busy} type="submit">{busy ? <Spinner /> : <PlusIcon />} Create bot</Button></DialogFooter>
+    {error ? <FormError message={error} /> : null}<DialogFooter><Button disabled={busy} type="submit" variant="outline">{busy ? <Spinner /> : <PlusIcon />} Create bot</Button></DialogFooter>
   </form></DialogContent></Dialog>;
 }
 
@@ -55,36 +55,35 @@ export function ConversationDialog({ open, onOpenChange, bots, onCreated }: Dial
     finally { setBusy(false); }
   }
 
-  return <Dialog onOpenChange={onOpenChange} open={open}><DialogContent><DialogHeader><DialogTitle>NEW BOT ROOM</DialogTitle><DialogDescription>Choose up to four bots. Each responds once per round and can read earlier replies.</DialogDescription></DialogHeader><form className="grid gap-4" onSubmit={submit}><Field label="ROOM NAME"><Input autoFocus maxLength={80} onChange={(event) => setTitle(event.target.value)} placeholder="Weekend project council" required value={title} /></Field><fieldset><legend className="mb-2 text-[10px] text-muted-foreground">PARTICIPANTS</legend>{bots.length === 0 ? <p className="border border-dashed p-4 text-muted-foreground text-xs">Create a bot first, then come back here.</p> : <div className="max-h-56 space-y-1 overflow-y-auto border p-2">{bots.map((bot) => { const checked = botIds.includes(bot.id); const disabled = !checked && botIds.length >= 4; return <label className={`flex items-center gap-3 p-2 text-xs ${disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-muted"}`} key={bot.id}><Checkbox checked={checked} disabled={disabled} onCheckedChange={(value) => setBotIds((current) => value ? [...current, bot.id] : current.filter((id) => id !== bot.id))} /><span className="grid size-6 place-items-center text-white text-[10px]" style={{ backgroundColor: bot.color }}>{bot.name[0]}</span><span>{bot.name}</span><span className="ml-auto text-muted-foreground">@{bot.handle}</span></label>; })}</div>}</fieldset>{error ? <FormError message={error} /> : null}<DialogFooter><Button disabled={busy || botIds.length === 0} type="submit">{busy ? <Spinner /> : <PlusIcon />} Create room</Button></DialogFooter></form></DialogContent></Dialog>;
+  return <Dialog onOpenChange={onOpenChange} open={open}><DialogContent><DialogHeader><DialogTitle>NEW BOT ROOM</DialogTitle><DialogDescription>Choose up to four bots. Each responds once per round and can read earlier replies.</DialogDescription></DialogHeader><form className="grid gap-4" onSubmit={submit}><Field label="ROOM NAME"><Input autoFocus maxLength={80} onChange={(event) => setTitle(event.target.value)} placeholder="Weekend project council" required value={title} /></Field><fieldset><legend className="mb-2 text-[10px] text-muted-foreground">PARTICIPANTS</legend>{bots.length === 0 ? <p className="border border-dashed p-4 text-muted-foreground text-xs">Create a bot first, then come back here.</p> : <div className="max-h-56 space-y-1 overflow-y-auto border p-2">{bots.map((bot) => { const checked = botIds.includes(bot.id); const disabled = !checked && botIds.length >= 4; return <label className={`flex items-center gap-3 p-2 text-xs ${disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-muted"}`} key={bot.id}><Checkbox checked={checked} disabled={disabled} onCheckedChange={(value) => setBotIds((current) => value ? [...current, bot.id] : current.filter((id) => id !== bot.id))} /><span className="grid size-6 place-items-center text-white text-[10px]" style={{ backgroundColor: bot.color }}>{bot.name[0]}</span><span>{bot.name}</span><span className="ml-auto text-muted-foreground">@{bot.handle}</span></label>; })}</div>}</fieldset>{error ? <FormError message={error} /> : null}<DialogFooter><Button disabled={busy || botIds.length === 0} type="submit" variant="outline">{busy ? <Spinner /> : <PlusIcon />} Create room</Button></DialogFooter></form></DialogContent></Dialog>;
 }
 
 export function ConnectionDialog({ open, onOpenChange, onCreated }: DialogProps & { onCreated: () => Promise<void> }) {
-  const [kind, setKind] = useState<CreateIntegrationInput["kind"]>("github");
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [description, setDescription] = useState("");
-  const [toolkits, setToolkits] = useState("");
+  const [headerName, setHeaderName] = useState("");
+  const [headerValue, setHeaderValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  useEffect(() => { if (open) { setKind("github"); setName(""); setUrl(""); setDescription(""); setToolkits(""); setError(undefined); } }, [open]);
+  useEffect(() => { if (open) { setName(""); setUrl(""); setDescription(""); setHeaderName(""); setHeaderValue(""); setError(undefined); } }, [open]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError(undefined);
     try {
-      const result = await api<ConnectResponse>("/api/integrations", { method: "POST", body: JSON.stringify({ kind, name: name || undefined, url: url || undefined, description, toolkits: toolkits.split(",").map((item) => item.trim()).filter(Boolean), platform: "web" }) });
+      const result = await api<ConnectResponse>("/api/integrations", { method: "POST", body: JSON.stringify({ kind: "mcp", name, url, description, headerName: headerName || undefined, headerValue: headerValue || undefined, platform: "web" }) });
       if (result.authorizationUrl) { window.location.assign(result.authorizationUrl); return; }
       await onCreated();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not add connection."); }
     finally { setBusy(false); }
   }
 
-  return <Dialog onOpenChange={onOpenChange} open={open}><DialogContent><DialogHeader><DialogTitle>ADD A CONNECTION</DialogTitle><DialogDescription>GitHub uses official remote MCP OAuth. Custom servers use MCP discovery, dynamic registration, and PKCE.</DialogDescription></DialogHeader><div className="grid grid-cols-3 border p-1">{(["github", "mcp", "composio"] as const).map((item) => <button className={`h-8 text-[10px] uppercase ${kind === item ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted"}`} key={item} onClick={() => setKind(item)} type="button">{item === "mcp" ? "Custom MCP" : item}</button>)}</div><form className="grid gap-4" onSubmit={submit}>
-    {kind === "github" ? <div className="flex gap-3 border bg-muted p-3 text-muted-foreground text-xs leading-relaxed"><GithubLogoIcon className="size-5 shrink-0 text-foreground" /><p>You'll be sent to GitHub to approve access. On return, this connection discovers the tools available to your account.</p></div> : null}
-    {kind !== "github" ? <Field label={kind === "composio" ? "DISPLAY NAME (OPTIONAL)" : "DISPLAY NAME"}><Input autoFocus onChange={(event) => setName(event.target.value)} placeholder={kind === "composio" ? "My app toolbox" : "Local notes"} value={name} /></Field> : null}
-    {kind === "mcp" ? <Field label="STREAMABLE HTTP / SSE URL"><Input onChange={(event) => setUrl(event.target.value)} placeholder="https://example.com/mcp" required type="url" value={url} /></Field> : null}
-    {kind === "composio" ? <Field label="TOOLKITS (OPTIONAL, COMMA SEPARATED)"><Input onChange={(event) => setToolkits(event.target.value)} placeholder="github, gmail" value={toolkits} /><p className="mt-2 text-[10px] text-muted-foreground leading-relaxed">Requires COMPOSIO_API_KEY on the server. Composio creates a user-scoped hosted MCP session.</p></Field> : null}
-    {kind !== "github" ? <Field label="MODEL-FACING DESCRIPTION"><Textarea className="min-h-20" onChange={(event) => setDescription(event.target.value)} placeholder="What can this connection help your bots do?" value={description} /></Field> : null}
-    {error ? <FormError message={error} /> : null}<DialogFooter><Button disabled={busy} type="submit">{busy ? <Spinner /> : <PlusIcon />} {kind === "github" ? "Connect GitHub" : "Add & test"}</Button></DialogFooter>
+  return <Dialog onOpenChange={onOpenChange} open={open}><DialogContent><DialogHeader><DialogTitle>ADD CUSTOM MCP</DialogTitle><DialogDescription>Connect any Streamable HTTP MCP server. OAuth discovery and PKCE start automatically when required.</DialogDescription></DialogHeader><form className="grid gap-4" onSubmit={submit}>
+    <Field label="DISPLAY NAME"><Input autoFocus onChange={(event) => setName(event.target.value)} placeholder="GitHub, Composio, or your own server" required value={name} /></Field>
+    <Field label="STREAMABLE HTTP / SSE URL"><Input onChange={(event) => setUrl(event.target.value)} placeholder="https://api.githubcopilot.com/mcp/" required type="url" value={url} /></Field>
+    <Field label="MODEL-FACING DESCRIPTION"><Textarea className="min-h-20" onChange={(event) => setDescription(event.target.value)} placeholder="What can this connection help your bots do?" value={description} /></Field>
+    <div className="grid grid-cols-2 gap-3"><Field label="HEADER NAME (OPTIONAL)"><Input autoComplete="off" onChange={(event) => setHeaderName(event.target.value)} placeholder="x-api-key" value={headerName} /></Field><Field label="HEADER VALUE (OPTIONAL)"><Input autoComplete="off" onChange={(event) => setHeaderValue(event.target.value)} placeholder="Encrypted on the server" type="password" value={headerValue} /></Field></div>
+    {error ? <FormError message={error} /> : null}<DialogFooter><Button disabled={busy} type="submit" variant="outline">{busy ? <Spinner /> : <PlusIcon />} Add & test</Button></DialogFooter>
   </form></DialogContent></Dialog>;
 }
 

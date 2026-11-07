@@ -9,7 +9,7 @@ A single-tenant personal bot club for Android, web, and desktop. Create custom b
 - **Shared design:** `@slopbot/design-tokens` supplies Lyra's neutral palette, monospace type, square geometry, spacing, and semantic tokens to every client.
 - **Agents:** AI SDK 7 `WorkflowAgent` (the durable `ToolLoopAgent` counterpart), Vercel AI Gateway with `anthropic/claude-sonnet-5.5` as the default model, and Vercel Workflows.
 - **Persistence:** Drizzle + Postgres in production; an atomic file store for zero-setup local development.
-- **Connections:** custom Streamable HTTP MCP, OAuth discovery + dynamic client registration + PKCE, GitHub remote MCP, and Composio user-scoped hosted MCP sessions.
+- **Connections:** custom Streamable HTTP MCP, OAuth discovery + dynamic client registration + PKCE, and optional encrypted API-key headers for providers such as Composio.
 - **Desktop:** Electrobun with the native system webview (WKWebView, WebView2, or WebKitGTK). Its outbound bridge reaches MCP servers on your computer without opening an inbound cloud-accessible port.
 - **Application layer:** Effect 4 services, Layers, typed errors, and dependency injection for storage, authentication, and MCP.
 
@@ -111,7 +111,9 @@ AI_GATEWAY_API_KEY=<gateway-key>
 
 Each bot can override the model ID in its creation form.
 
-### 4. MCP OAuth and Composio
+### 4. Custom MCP
+
+Add any Streamable HTTP MCP URL from **Connections → Add connection**. OAuth-capable servers use discovery, dynamic client registration, and PKCE. For API-key providers such as Composio, enter an optional header name/value pair (for example, `x-api-key`); the value is encrypted before storage and never returned to clients. GitHub's remote MCP endpoint is `https://api.githubcopilot.com/mcp/`.
 
 Set the public canonical URL:
 
@@ -127,14 +129,6 @@ https://your-app.vercel.app/api/oauth/mcp/callback
 
 Compliant MCP OAuth servers can use discovery and dynamic client registration; no provider token is shipped to clients. Locally, OAuth providers generally require a public HTTPS tunnel instead of a LAN URL.
 
-For Composio:
-
-```dotenv
-COMPOSIO_API_KEY=<project-api-key>
-```
-
-Composio sessions are created with the signed-in user's ID. Session headers are encrypted before storage.
-
 ### 5. Desktop pairing
 
 Set a high-entropy pairing token and your Vercel user ID:
@@ -149,7 +143,7 @@ In the signed-in web app, open **Connections → Desktop setup** to copy the tok
 1. Connects directly to local MCP endpoints.
 2. Registers tool schemas over authenticated outbound HTTPS.
 3. Polls for jobs addressed to its device ID.
-4. Executes only tools whose MCP annotations declare `readOnlyHint: true`.
+4. Executes only tools approved by the read-only tool policy.
 5. Resumes the waiting Vercel Workflow hook with the result.
 
 No local MCP URL or listening port is made available to the cloud. Tool arguments and results do cross the bridge when you ask a cloud-hosted bot to use a local tool.
@@ -169,7 +163,7 @@ Required production environment:
 - `APP_URL`
 - AI Gateway OIDC access or `AI_GATEWAY_API_KEY`
 
-Optional: `COMPOSIO_API_KEY`, `DESKTOP_PAIRING_TOKEN`, and `DESKTOP_USER_ID`.
+Optional: `DESKTOP_PAIRING_TOKEN` and `DESKTOP_USER_ID`.
 
 ## Verification
 

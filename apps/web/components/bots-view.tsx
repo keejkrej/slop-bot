@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 export function BotsView({ bots, integrations, onCreate }: { bots: Bot[]; integrations: Integration[]; onCreate: () => void }) {
   return (
     <main className="mx-auto max-w-6xl p-5 py-8 sm:p-8 lg:py-12">
-      <PageHeader eyebrow="CASTING ROOM" title="Your bots." description="Distinct instructions, models, and tools. Put them together and watch the ideas collide." action={<Button onClick={onCreate}><PlusIcon /> Create bot</Button>} />
+      <PageHeader eyebrow="CASTING ROOM" title="Your bots." description="Distinct instructions, models, and tools. Put them together and watch the ideas collide." action={<Button onClick={onCreate} variant="outline"><PlusIcon /> Create bot</Button>} />
       {bots.length === 0 ? <div className="grid min-h-72 place-items-center border border-dashed"><div className="text-center"><RobotIcon className="mx-auto mb-4 size-7 text-muted-foreground" /><p className="text-sm">No custom personalities yet.</p><Button className="mt-5" onClick={onCreate} variant="outline">Create your first bot</Button></div></div> : (
         <div className="grid gap-px overflow-hidden border bg-border sm:grid-cols-2 xl:grid-cols-3">
           {bots.map((bot) => <Card className="border-0 ring-0" key={bot.id}>

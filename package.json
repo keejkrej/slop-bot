@@ -22,7 +22,6 @@
   "dependencies": {
     "@ai-sdk/workflow": "^2.0.97",
     "@base-ui/react": "^1.9.0",
-    "@composio/core": "^0.28.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@phosphor-icons/react": "^2.1.10",
     "@slopbot/contracts": "workspace:*",

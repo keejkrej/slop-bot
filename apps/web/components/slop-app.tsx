@@ -107,7 +107,7 @@ function SidebarContent({ data, view, selectedId, onNavigate, onConversation, on
 }) {
   return <>
     <div className="flex h-16 items-center gap-3 border-b px-5"><LogoMark /><span className="font-medium text-sm tracking-[-0.06em]">SLOP BOT</span><span className="ml-auto text-[9px] text-muted-foreground">BETA</span></div>
-    <div className="p-3"><Button className="w-full justify-start" onClick={() => onDialog("conversation")} variant="default"><PlusIcon /> New group chat</Button></div>
+    <div className="p-3"><Button className="w-full justify-start" onClick={() => onDialog("conversation")} variant="outline"><PlusIcon /> New group chat</Button></div>
     <nav className="space-y-1 px-3" aria-label="Main navigation">
       <NavButton active={view === "chat"} icon={<ChatsCircleIcon />} label="Conversations" onClick={() => onNavigate("chat")} />
       <NavButton active={view === "bots"} icon={<RobotIcon />} label="Your bots" count={data.bots.length} onClick={() => onNavigate("bots")} />
@@ -123,11 +123,11 @@ function SidebarContent({ data, view, selectedId, onNavigate, onConversation, on
 }
 
 function NavButton({ active, icon, label, count, onClick }: { active: boolean; icon: React.ReactNode; label: string; count?: number; onClick: () => void }) {
-  return <button className={`flex h-9 w-full items-center gap-3 px-3 text-left text-xs ${active ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`} onClick={onClick} type="button">{icon}<span>{label}</span>{count !== undefined ? <span className="ml-auto opacity-60">{count}</span> : null}</button>;
+  return <button className={`flex h-9 w-full items-center gap-3 px-3 text-left text-xs ${active ? "border border-border bg-muted text-foreground" : "border border-transparent text-muted-foreground hover:bg-muted hover:text-foreground"}`} onClick={onClick} type="button">{icon}<span>{label}</span>{count !== undefined ? <span className="ml-auto opacity-60">{count}</span> : null}</button>;
 }
 
 function MobileNavButton({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
-  return <button className={`h-11 text-xs ${active ? "bg-foreground text-background" : "text-muted-foreground"}`} onClick={onClick} type="button">{label}</button>;
+  return <button className={`h-11 text-xs ${active ? "bg-muted text-foreground" : "text-muted-foreground"}`} onClick={onClick} type="button">{label}</button>;
 }
 
 function LoadingScreen({ error, retry }: { error?: string; retry?: () => void }) {
@@ -135,5 +135,5 @@ function LoadingScreen({ error, retry }: { error?: string; retry?: () => void })
 }
 
 function EmptyChat({ onCreate }: { onCreate: () => void }) {
-  return <main className="grid min-h-[calc(100dvh-7rem)] place-items-center p-6"><div className="max-w-sm text-center"><ChatsCircleIcon className="mx-auto mb-5 size-8" /><h1 className="text-2xl tracking-[-0.06em]">Start a bot room.</h1><p className="mt-3 mb-6 text-muted-foreground text-xs leading-relaxed">Pick one bot for a focused chat or up to four for a bounded group discussion.</p><Button onClick={onCreate}><PlusIcon /> Create group</Button></div></main>;
+  return <main className="grid min-h-[calc(100dvh-7rem)] place-items-center p-6"><div className="max-w-sm text-center"><ChatsCircleIcon className="mx-auto mb-5 size-8" /><h1 className="text-2xl tracking-[-0.06em]">Start a bot room.</h1><p className="mt-3 mb-6 text-muted-foreground text-xs leading-relaxed">Pick one bot for a focused chat or up to four for a bounded group discussion.</p><Button onClick={onCreate} variant="outline"><PlusIcon /> Create group</Button></div></main>;
 }
