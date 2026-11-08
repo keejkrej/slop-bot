@@ -24,9 +24,9 @@ The root scripts locate Hutch in its standard user-level installation directorie
 - `src/bun/mcp.ts` — direct local Streamable HTTP MCP discovery and invocation.
 - `src/bun/bridge.ts` — authenticated outbound registration, job polling, and result delivery.
 - `src/bun/store.ts` — atomic settings persistence under Electrobun's app-scoped `Utils.paths.userData`.
-- `src/shared/rpc.ts` — type-only main/webview RPC contract.
-- `src/mainview/` — Lyra-themed local connection manager.
+- `src/shared/rpc.ts` — type-only host RPC contract for native configuration.
+- `src/mainview/` — optional local configuration assets; not the product UI.
 
-**Open web app** creates a separate sandboxed native webview with no privileged RPC. The local-tools window retains the privileged RPC bridge.
+The desktop loads the full shared web app directly in its native sandboxed BrowserWindow. Local MCP stays in the background bridge, and signed session handoff uses Electrobun's host-message event.
 
 Local MCP servers never need to listen beyond the user's machine. Cloud agent workflows receive tool schemas and send jobs through the authenticated API; only explicitly read-only MCP tools can execute.
