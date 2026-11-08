@@ -107,5 +107,6 @@ export interface AppStore {
   createPendingAction(input: NewPendingAction): Promise<PendingAction>;
   getPendingAction(userId: string, actionId: string): Promise<PendingAction | null>;
   listPendingActions(userId: string, conversationId: string): Promise<PendingAction[]>;
+  listPendingDesktopConnections(userId: string): Promise<Integration[]>;
   setPendingActionStatus(userId: string, actionId: string, status: PendingAction["status"]): Promise<void>;
 }

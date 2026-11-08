@@ -1,5 +1,6 @@
 import type { DesktopStore } from "./store";
-import { callLocalTool } from "./mcp";
+import { callLocalTool, discoverTools } from "./mcp";
+import type { LocalServer } from "../shared/rpc";
 
 export type BridgeJob = {
 	id: string;
@@ -11,6 +12,7 @@ export type BridgeJob = {
 export class DesktopBridge {
 	private timer?: ReturnType<typeof setInterval>;
 	private running = false;
+	private pendingAttempts = new Map<string, number>();
 	onStatus?: (status: "offline" | "online" | "error", message?: string) => void;
 
 	constructor(private readonly store: DesktopStore) {}
@@ -65,12 +67,42 @@ export class DesktopBridge {
 			if (!response.ok) throw new Error(`Bridge polling failed (${response.status}).`);
 			const { jobs = [] } = await response.json() as { jobs?: BridgeJob[] };
 			for (const job of jobs) void this.execute(job);
+			await this.claimPending(config);
 			this.onStatus?.("online");
 		} catch (error) {
 			this.onStatus?.("error", error instanceof Error ? error.message : "Bridge polling failed.");
 		} finally {
 			this.running = false;
 		}
+	}
+
+	private async claimPending(config: Awaited<ReturnType<DesktopStore["read"]>>): Promise<void> {
+		const response = await this.request("/api/desktop/pending", undefined, config);
+		if (!response.ok) return;
+		const { connections = [] } = await response.json() as { connections?: Array<{ id: string; name: string; url: string }> };
+		for (const connection of connections) {
+			const lastAttempt = this.pendingAttempts.get(connection.id) ?? 0;
+			if (Date.now() - lastAttempt < 30_000) continue;
+			this.pendingAttempts.set(connection.id, Date.now());
+			try {
+				const tools = await discoverTools(connection.url);
+				const localId = crypto.randomUUID();
+				const server: LocalServer = { localId, integrationId: connection.id, name: connection.name, url: connection.url, tools, status: "connected" };
+				const claim = await this.request("/api/desktop/claim", { integrationId: connection.id, deviceId: config.deviceId, localId, tools }, config);
+				if (!claim.ok) throw new Error(`Could not claim local connection (${claim.status}).`);
+				await this.store.update({ servers: [...config.servers, server] });
+				this.pendingAttempts.delete(connection.id);
+			} catch (error) {
+				await this.request("/api/desktop/claim", {
+					integrationId: connection.id,
+					deviceId: config.deviceId,
+					localId: crypto.randomUUID(),
+					tools: [],
+					error: error instanceof Error ? error.message.slice(0, 500) : "Local MCP discovery failed.",
+				}, config).catch(() => undefined);
+			}
+		}
+		if (connections.length > 0) await this.sync();
 	}
 
 	private async execute(job: BridgeJob): Promise<void> {

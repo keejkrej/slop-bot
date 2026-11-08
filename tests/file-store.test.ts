@@ -31,6 +31,21 @@ describe("FileStore", () => {
     expect(JSON.stringify(await reloaded.listIntegrations("demo-user"))).not.toContain("not-plaintext");
   });
 
+  it("tracks pending desktop connections until Electrobun claims them", async () => {
+    const store = await makeStore();
+    const integration = await store.createIntegration("demo-user", {
+      kind: "desktop",
+      name: "Local MCP",
+      url: "http://127.0.0.1:3030/mcp",
+      description: "Local",
+      status: "authorization_required",
+    });
+    await store.setSecret("demo-user", integration.id, { pending: true, tools: [] });
+    expect(await store.listPendingDesktopConnections("demo-user")).toHaveLength(1);
+    await store.setSecret("demo-user", integration.id, { pending: false, deviceId: "device-1", tools: [] });
+    expect(await store.listPendingDesktopConnections("demo-user")).toHaveLength(0);
+  });
+
   it("persists and completes signed approval state", async () => {
     const store = await makeStore();
     const action = await store.createPendingAction({
