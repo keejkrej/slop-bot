@@ -10,6 +10,7 @@
     "export:android": "expo export --platform android"
   },
   "dependencies": {
+    "@babel/core": "^7.29.13",
     "@expo/dom-webview": "~57.0.1",
     "@expo/log-box": "~57.0.5",
     "@expo/metro-runtime": "~57.0.18",
@@ -20,6 +21,7 @@
     "@rn-primitives/slot": "^1.5.2",
     "@slopbot/contracts": "workspace:*",
     "@slopbot/design-tokens": "workspace:*",
+    "babel-preset-expo": "~57.0.17",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "expo": "~57.0.32",
