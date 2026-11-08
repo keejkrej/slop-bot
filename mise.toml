@@ -1,0 +1,11 @@
+[plugins]
+android-sdkmanager = "https://github.com/chbiel/mise-android-sdkmanager"
+
+[tools]
+java = "corretto-17.0.21.0.11"
+android-sdk = "23.0"
+"android-sdkmanager:platform-tools" = { version = "latest", depends = ["android-sdk", "java"] }
+"android-sdkmanager:emulator" = { version = "latest", depends = ["android-sdk", "java"] }
+"android-sdkmanager:build-tools" = { version = "36.0.0", depends = ["android-sdk", "java"] }
+"android-sdkmanager:platforms" = { version = "android-36", depends = ["android-sdk", "java"] }
+"android-sdkmanager:system-images/google_apis/x86_64" = { version = "android-36", depends = ["android-sdk", "java"] }
