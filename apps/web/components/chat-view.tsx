@@ -64,7 +64,7 @@ export function ChatView({ conversationId, bots, onRefresh, onCreateGroup }: { c
     finally { setBusy(false); }
   }
 
-  if (!detail) return <main className="grid h-[calc(100dvh-7rem)] place-items-center"><Spinner /></main>;
+  if (!detail) return <main className="grid h-[calc(100dvh-7rem)] place-items-center p-6">{error ? <div className="max-w-md text-center"><p className="text-destructive text-xs leading-relaxed">{error}</p><Button className="mt-4" onClick={() => void load()} variant="outline">Try again</Button></div> : <Spinner />}</main>;
   const participants = detail.conversation.botIds.map((id) => bots.find((bot) => bot.id === id)).filter((bot): bot is Bot => Boolean(bot));
 
   return <main className="flex h-[calc(100dvh-7rem)] min-h-0 flex-col lg:h-dvh">

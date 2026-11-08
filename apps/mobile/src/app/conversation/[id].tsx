@@ -89,7 +89,7 @@ export default function ConversationScreen() {
         </View>
 
         {!detail ? (
-          <View className="flex-1 items-center justify-center"><ActivityIndicator /></View>
+          <View className="flex-1 items-center justify-center p-6">{error ? <><Text className="text-center text-xs text-destructive">{error}</Text><Button className="mt-4" onPress={() => void load()} variant="outline"><Text>Try again</Text></Button></> : <ActivityIndicator />}</View>
         ) : (
           <FlatList
             contentContainerStyle={{ padding: 20, paddingBottom: 32, gap: 24 }}
