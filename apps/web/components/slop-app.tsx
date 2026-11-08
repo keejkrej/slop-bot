@@ -70,8 +70,8 @@ export function SlopApp() {
   if (!data) return <LoadingScreen error={error} retry={() => void reload()} />;
 
   return (
-    <div className="min-h-dvh bg-background lg:flex" data-ui-preset={lyra.preset}>
-      <aside className="hidden w-64 shrink-0 flex-col border-r bg-background lg:fixed lg:inset-y-0 lg:left-0 lg:flex">
+    <div className="min-h-dvh bg-background md:flex" data-ui-preset={lyra.preset}>
+      <aside className="hidden w-64 shrink-0 flex-col border-r bg-background md:fixed md:inset-y-0 md:left-0 md:flex">
         <SidebarContent
           data={data}
           selectedId={selectedId}
@@ -83,12 +83,12 @@ export function SlopApp() {
         />
       </aside>
 
-      <div className="min-w-0 flex-1 lg:ml-64">
-        <header className="flex h-14 items-center justify-between border-b px-4 lg:hidden">
+      <div className="min-w-0 flex-1 md:ml-64">
+        <header className="flex h-14 items-center justify-between border-b px-4 md:hidden">
           <button className="flex items-center gap-2 text-sm font-medium tracking-[-0.05em]" onClick={() => navigate("chat")} type="button"><LogoMark /> SLOP BOT</button>
           <Button aria-label="Create a group" onClick={() => setDialog("conversation")} size="icon-sm" variant="outline"><PlusIcon /></Button>
         </header>
-        <nav aria-label="Mobile navigation" className="grid grid-cols-3 border-b lg:hidden">
+        <nav aria-label="Mobile navigation" className="grid grid-cols-3 border-b md:hidden">
           <MobileNavButton active={view === "chat"} label="Chat" onClick={() => navigate("chat")} />
           <MobileNavButton active={view === "bots"} label="Bots" onClick={() => navigate("bots")} />
           <MobileNavButton active={view === "connections"} label="Tools" onClick={() => navigate("connections")} />

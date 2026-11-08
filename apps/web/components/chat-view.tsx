@@ -67,7 +67,7 @@ export function ChatView({ conversationId, bots, onRefresh, onCreateGroup }: { c
   if (!detail) return <main className="grid h-[calc(100dvh-7rem)] place-items-center p-6">{error ? <div className="max-w-md text-center"><p className="text-destructive text-xs leading-relaxed">{error}</p><Button className="mt-4" onClick={() => void load()} variant="outline">Try again</Button></div> : <Spinner />}</main>;
   const participants = detail.conversation.botIds.map((id) => bots.find((bot) => bot.id === id)).filter((bot): bot is Bot => Boolean(bot));
 
-  return <main className="flex h-[calc(100dvh-7rem)] min-h-0 flex-col lg:h-dvh">
+  return <main className="flex h-[calc(100dvh-7rem)] min-h-0 flex-col md:h-dvh">
     <header className="flex h-16 items-center gap-3 border-b px-4 sm:px-6">
       <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h1 className="truncate text-sm font-medium">{detail.conversation.title}</h1><Badge variant={running ? "default" : "secondary"}>{running ? "THINKING" : "READY"}</Badge></div><div className="mt-1.5 flex items-center gap-2 text-[10px] text-muted-foreground"><span>{participants.map((bot) => `@${bot.handle}`).join(" · ")}</span></div></div>
       <Button className="hidden sm:inline-flex" disabled={busy || running} onClick={() => void botRound()} size="sm" variant="outline"><UsersThreeIcon /> Bot round</Button>
