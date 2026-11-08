@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertMcpCallAllowed, isReadOnlyToolName } from "../apps/web/lib/server/mcp";
+import { assertMcpCallAllowed, isReadOnlyToolName, isLocalMcpUrl } from "../apps/web/lib/server/mcp";
 import { createIntegrationSchema } from "@slopbot/contracts";
 
 const executeTool = { name: "COMPOSIO_EXECUTE_TOOL", description: "Execute", inputSchema: {}, readOnly: true };
@@ -38,6 +38,12 @@ describe("MCP read-only execution policy", () => {
     expect(() => assertMcpCallAllowed({ ...executeTool, readOnly: false }, { tool_slug: "GITHUB_FIND_PULL_REQUESTS" })).toThrow(/Write tools/);
     expect(() => createIntegrationSchema.parse({ kind: "github", url: "https://api.githubcopilot.com/mcp/" })).toThrow();
     expect(() => createIntegrationSchema.parse({ kind: "composio", url: "https://backend.composio.dev/mcp" })).toThrow();
+  });
+
+  it("recognizes local endpoints for the desktop bridge without weakening public validation", () => {
+    expect(isLocalMcpUrl("http://127.0.0.1:3030/mcp")).toBe(true);
+    expect(isLocalMcpUrl("http://localhost:3030/mcp")).toBe(true);
+    expect(isLocalMcpUrl("https://internal-node.alexandria.so/v1/mcp")).toBe(false);
   });
 
   it("supports custom MCP connections with optional encrypted headers", () => {

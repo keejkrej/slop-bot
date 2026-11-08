@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { z } from "zod";
 import { requireDesktopUser } from "@/lib/server/desktop";
-import { fromPromise, fromSync, runApp, withStore } from "@/lib/server/effect";
+import { fromPromise, runApp, withStore } from "@/lib/server/effect";
 import { ApiError, parseJson } from "@/lib/server/http";
 import type { IntegrationSecret, McpToolDefinition } from "@/lib/server/mcp";
 
@@ -24,7 +24,7 @@ const schema = z.object({
 
 export function POST(request: Request): Promise<Response> {
   return runApp(Effect.gen(function* () {
-    const user = yield* fromSync(() => requireDesktopUser(request));
+    const user = yield* fromPromise(() => requireDesktopUser(request));
     const input = yield* fromPromise(() => parseJson(request, schema));
     const registrations = yield* withStore(async (store) => {
       const result = [];

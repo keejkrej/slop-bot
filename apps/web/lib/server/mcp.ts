@@ -24,6 +24,7 @@ export type IntegrationSecret = {
   discoveryState?: OAuthDiscoveryState;
   headers?: Record<string, string>;
   deviceId?: string;
+  pending?: boolean;
   tools?: McpToolDefinition[];
 };
 
@@ -71,6 +72,13 @@ export function assertMcpCallAllowed(tool: McpToolDefinition, args: Record<strin
   if (typeof slug !== "string" || !isReadOnlyToolName(slug)) {
     throw new Error("Composio can only execute read operations through this connection.");
   }
+}
+
+export function isLocalMcpUrl(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === "localhost" || hostname === "localhost.localdomain" || isPrivateAddress(hostname);
+  } catch { return false; }
 }
 
 export async function validateMcpUrl(value: string): Promise<string> {

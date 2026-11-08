@@ -14,6 +14,8 @@ import {
 import { decryptSecret, encryptSecret } from "./crypto";
 import { bots, conversations, desktopJobs, integrations, messages, oauthStates, pendingActions, toBot } from "./schema";
 import type { AppStore, DesktopJob, NewDesktopJob, NewIntegration, NewMessage, NewPendingAction, OAuthState, PendingAction } from "./types";
+import type { IntegrationSecret } from "../apps/web/lib/server/mcp";
+
 
 const iso = (value: string) => new Date(value).toISOString();
 
@@ -206,6 +208,20 @@ export class PostgresStore implements AppStore {
       eq(pendingActions.status, "pending"),
     )).orderBy(pendingActions.createdAt);
     return rows.map(toPendingAction);
+  }
+
+  async listPendingDesktopConnections(userId: string): Promise<Integration[]> {
+    const rows = await this.db.select().from(integrations).where(and(
+      eq(integrations.userId, userId),
+      eq(integrations.kind, "desktop"),
+      eq(integrations.status, "authorization_required"),
+    ));
+    const pending: Integration[] = [];
+    for (const row of rows) {
+      const secret = row.secretCiphertext ? decryptSecret<IntegrationSecret>(row.secretCiphertext) : null;
+      if (secret?.pending) pending.push(toIntegration(row));
+    }
+    return pending;
   }
 
   async setPendingActionStatus(userId: string, actionId: string, status: PendingAction["status"]): Promise<void> {

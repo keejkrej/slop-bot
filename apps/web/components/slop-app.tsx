@@ -45,6 +45,15 @@ export function SlopApp() {
     }).catch(() => setAuthChecked(true));
   }, [reload]);
 
+  useEffect(() => {
+    const sendToHost = window.__electrobunSendToHost;
+    if (!data || typeof sendToHost !== "function") return;
+    void fetch("/api/auth/desktop-handoff", { method: "POST" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((handoff) => { if (handoff) sendToHost({ type: "slop-bot:session", ...handoff }); })
+      .catch(() => undefined);
+  }, [data?.user.id]);
+
   function navigate(next: View) {
     setView(next);
     if (next === "connections") window.history.replaceState(null, "", "/?view=connections");

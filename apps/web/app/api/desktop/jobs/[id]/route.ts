@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { resumeHook } from "workflow/api";
 import { z } from "zod";
 import { requireDesktopUser } from "@/lib/server/desktop";
-import { fromPromise, fromSync, runApp, withStore } from "@/lib/server/effect";
+import { fromPromise, runApp, withStore } from "@/lib/server/effect";
 import { ApiError, parseJson } from "@/lib/server/http";
 import { hookToken } from "@workflows/desktop-tools";
 
@@ -15,7 +15,7 @@ const resultSchema = z.object({
 
 export function POST(request: Request, context: { params: Promise<{ id: string }> }): Promise<Response> {
   return runApp(Effect.gen(function* () {
-    const user = yield* fromSync(() => requireDesktopUser(request));
+    const user = yield* fromPromise(() => requireDesktopUser(request));
     const [{ id }, input] = yield* fromPromise(() => Promise.all([context.params, parseJson(request, resultSchema)]));
     yield* withStore(async (store) => {
       const job = await store.getDesktopJob(user.id, id);

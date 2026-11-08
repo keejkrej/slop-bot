@@ -14,6 +14,7 @@ import {
 } from "@slopbot/contracts";
 import { decryptSecret, encryptSecret } from "./crypto";
 import type { AppStore, DesktopJob, NewDesktopJob, NewIntegration, NewMessage, NewPendingAction, OAuthState, PendingAction } from "./types";
+import type { IntegrationSecret } from "../apps/web/lib/server/mcp";
 
 type FileState = {
   bots: Array<Bot & { userId: string }>;
@@ -367,6 +368,17 @@ export class FileStore implements AppStore {
     return (await this.load()).pendingActions.filter(
       (action) => action.userId === userId && action.conversationId === conversationId && action.status === "pending",
     );
+  }
+
+  async listPendingDesktopConnections(userId: string): Promise<Integration[]> {
+    const state = await this.load();
+    const pending: Integration[] = [];
+    for (const integration of state.integrations) {
+      if (integration.userId !== userId || integration.kind !== "desktop") continue;
+      const secret = await this.getSecret<IntegrationSecret>(userId, integration.id);
+      if (secret?.pending) pending.push(publicIntegration(integration));
+    }
+    return pending;
   }
 
   async setPendingActionStatus(userId: string, actionId: string, status: PendingAction["status"]): Promise<void> {
