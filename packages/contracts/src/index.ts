@@ -86,11 +86,18 @@ export const userSchema = z.object({
   avatarUrl: z.string().nullable(),
 });
 
+export const botPreviewSchema = z.object({
+  botId: z.string(),
+  content: z.string(),
+  createdAt: z.string(),
+});
+
 export const bootstrapSchema = z.object({
   user: userSchema,
   bots: z.array(botSchema),
   conversations: z.array(conversationSchema),
   integrations: z.array(integrationSchema),
+  botPreviews: z.array(botPreviewSchema).default([]),
   agentMode: z.enum(["gateway", "demo"]),
 });
 
@@ -125,6 +132,7 @@ export type ChatMessage = z.infer<typeof messageSchema>;
 export type Integration = z.infer<typeof integrationSchema>;
 export type CreateIntegrationInput = z.infer<typeof createIntegrationSchema>;
 export type User = z.infer<typeof userSchema>;
+export type BotPreview = z.infer<typeof botPreviewSchema>;
 export type Bootstrap = z.infer<typeof bootstrapSchema>;
 export type ConversationDetail = z.infer<typeof conversationDetailSchema>;
 export type ConnectResponse = z.infer<typeof connectResponseSchema>;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUpIcon } from "@phosphor-icons/react";
+import { ArrowUpIcon, MicrophoneIcon, PlusIcon, WaveformIcon } from "@phosphor-icons/react";
 import type { Bot, ChatMessage, ConversationDetail } from "@slopbot/contracts";
 import { api, getConversation } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
@@ -67,7 +67,7 @@ export function ChatView({ chatId, bots, selectedBotId, onRefresh, onBot }: {
   return (
     <main className="flex h-[calc(100dvh-4rem)] min-h-0 flex-col md:h-dvh">
       <header className="flex h-20 shrink-0 items-center justify-center px-4">
-        <div className="flex min-w-0 items-center gap-2 bg-muted px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2 border border-foreground/20 bg-foreground/10 px-3 py-2">
           <BotAvatars bots={participants} />
           <h1 className="hidden max-w-52 truncate text-[13px] font-medium md:block">{participants[0]?.name ?? detail.conversation.title}</h1>
           <select aria-label="Switch bot" className="min-w-0 max-w-52 bg-transparent text-xs outline-none md:hidden" onChange={(event) => onBot(event.target.value)} value={selectedBotId}>
@@ -77,9 +77,9 @@ export function ChatView({ chatId, bots, selectedBotId, onRefresh, onBot }: {
       </header>
 
       <div aria-busy={running} className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-10">
-          <div aria-live="polite" aria-relevant="additions text" className="space-y-8">
-            {detail.messages.map((message) => <MessageBubble bots={bots} key={message.id} message={message} />)}
+        <div className="mx-auto max-w-3xl px-4 py-4 sm:px-6 sm:py-6">
+          <div aria-live="polite" aria-relevant="additions text" className="space-y-4">
+            {detail.messages.map((message) => <MessageBubble key={message.id} message={message} />)}
           </div>
 
           {detail.pendingActions.map((action) => (
@@ -102,10 +102,11 @@ export function ChatView({ chatId, bots, selectedBotId, onRefresh, onBot }: {
       </div>
 
       <div className="shrink-0 bg-background px-4 pb-4 pt-2 sm:px-6 sm:pb-6">
-        <form className="mx-auto flex max-w-3xl items-end gap-1 bg-muted/60 p-1.5" onSubmit={send}>
+        <form className="mx-auto flex max-w-3xl items-center gap-1 border border-foreground/20 bg-foreground/10 p-1.5" onSubmit={send}>
+          <Button aria-label="Add attachment" className="size-9" disabled size="icon-lg" title="Attachments aren't available yet" type="button" variant="ghost"><PlusIcon /></Button>
           <Textarea
             aria-label="Message the bot"
-            className="max-h-40 min-h-10 flex-1 resize-none border-0 bg-transparent px-2 py-2.5 text-[13px] leading-5 focus-visible:ring-0 disabled:bg-transparent md:text-[13px]"
+            className="h-9 max-h-40 min-h-9 min-w-0 flex-1 resize-none border-0 bg-transparent px-2 py-2 text-[13px] leading-5 focus-visible:ring-0 disabled:bg-transparent md:text-[13px]"
             disabled={busy || running}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }}
@@ -113,7 +114,12 @@ export function ChatView({ chatId, bots, selectedBotId, onRefresh, onBot }: {
             rows={1}
             value={draft}
           />
-          <Button aria-label="Send message" className="size-9" disabled={!draft.trim() || busy || running} size="icon-lg" type="submit">{busy ? <Spinner /> : <ArrowUpIcon />}</Button>
+          <Button aria-label="Voice input" className="size-9" disabled size="icon-lg" title="Voice input isn't available yet" type="button" variant="ghost"><MicrophoneIcon /></Button>
+          {draft.trim().length > 0 ? (
+            <Button aria-label="Send message" className="size-9" disabled={busy || running} size="icon-lg" type="submit" variant="ghost">{busy ? <Spinner /> : <ArrowUpIcon />}</Button>
+          ) : (
+            <Button aria-label="Voice chat" className="size-9" disabled size="icon-lg" title="Voice chat isn't available yet" type="button" variant="ghost"><WaveformIcon /></Button>
+          )}
         </form>
         <p className="sr-only">Enter to send. Shift and Enter creates a new line.</p>
       </div>
@@ -138,23 +144,19 @@ function BotAvatars({ bots, large = false }: { bots: Bot[]; large?: boolean }) {
   );
 }
 
-function MessageBubble({ message, bots }: { message: ChatMessage; bots: Bot[] }) {
+function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.senderType === "user") return (
     <article className="flex justify-end">
-      <div className="max-w-[90%] border border-border/70 bg-muted px-4 py-3.5 text-foreground sm:max-w-[80%]">
-        <p className="mb-2 text-[10px] font-medium text-muted-foreground">You</p>
+      <div className="max-w-[90%] border border-border/70 bg-muted px-3.5 py-2.5 text-foreground sm:max-w-[80%]">
         <p className="message-text text-[13px] leading-6">{message.content}</p>
       </div>
     </article>
   );
   if (message.senderType === "system") return <p className="border-l-2 border-destructive bg-destructive/5 px-4 py-3 text-muted-foreground text-xs leading-6">{message.content}</p>;
-  const bot = bots.find((item) => item.id === message.senderId);
   return (
-    <article className="flex max-w-[96%] items-start gap-3.5 sm:max-w-[88%]">
-      <div className="mt-0.5 grid size-9 shrink-0 place-items-center text-white text-xs font-medium" style={{ backgroundColor: bot?.color ?? "#737373" }}>{bot?.name.slice(0, 1).toUpperCase() ?? "?"}</div>
-      <div className="min-w-0 pt-0.5">
-        <div className="mb-2 flex items-baseline gap-2"><span className="font-medium text-[13px]">{bot?.name ?? "Removed bot"}</span><span className="text-[10px] text-muted-foreground">@{bot?.handle ?? "unknown"}</span></div>
-        <p className={`message-text text-[13px] leading-7 ${message.status === "failed" ? "text-destructive" : "text-foreground"}`}>{message.content}</p>
+    <article className="flex max-w-[96%] sm:max-w-[88%]">
+      <div className="w-fit max-w-full border border-foreground/10 bg-foreground/5 px-3.5 py-2.5">
+        <p className={`message-text text-[13px] leading-6 ${message.status === "failed" ? "text-destructive" : "text-foreground"}`}>{message.content}</p>
       </div>
     </article>
   );

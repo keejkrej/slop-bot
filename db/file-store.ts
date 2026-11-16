@@ -5,6 +5,7 @@ import {
   botColor,
   DEFAULT_MODEL,
   type Bot,
+  type BotPreview,
   type ChatMessage,
   type Conversation,
   type CreateBotInput,
@@ -213,6 +214,22 @@ export class FileStore implements AppStore {
       .filter((message) => message.userId === userId && message.conversationId === conversationId)
       .map(publicMessage)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async listBotPreviews(userId: string): Promise<BotPreview[]> {
+    const latest = new Map<string, ChatMessage & { userId: string }>();
+    for (const message of (await this.load()).messages) {
+      if (message.userId !== userId || message.senderType !== "bot") continue;
+      const current = latest.get(message.senderId);
+      if (!current || message.createdAt.localeCompare(current.createdAt) > 0) {
+        latest.set(message.senderId, message);
+      }
+    }
+    return [...latest.values()].map(({ senderId, content, createdAt }) => ({
+      botId: senderId,
+      content,
+      createdAt,
+    }));
   }
 
   async addMessage(userId: string, input: NewMessage): Promise<ChatMessage> {

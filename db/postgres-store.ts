@@ -4,6 +4,7 @@ import postgres from "postgres";
 import {
   botColor,
   type Bot,
+  type BotPreview,
   type ChatMessage,
   type Conversation,
   type CreateBotInput,
@@ -80,6 +81,19 @@ export class PostgresStore implements AppStore {
       .where(and(eq(messages.userId, userId), eq(messages.conversationId, conversationId)))
       .orderBy(messages.createdAt);
     return rows.map(toMessage);
+  }
+
+  async listBotPreviews(userId: string): Promise<BotPreview[]> {
+    const rows = await this.db
+      .selectDistinctOn([messages.senderId], {
+        botId: messages.senderId,
+        content: messages.content,
+        createdAt: messages.createdAt,
+      })
+      .from(messages)
+      .where(and(eq(messages.userId, userId), eq(messages.senderType, "bot")))
+      .orderBy(messages.senderId, desc(messages.createdAt));
+    return rows.map((row) => ({ botId: row.botId, content: row.content, createdAt: iso(row.createdAt) }));
   }
 
   async addMessage(userId: string, input: NewMessage): Promise<ChatMessage> {

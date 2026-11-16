@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { ChatsCircleIcon, MagnifyingGlassIcon, PlusIcon, SidebarSimpleIcon, SquaresFourIcon } from "@phosphor-icons/react";
+import { ChatsCircleIcon, MagnifyingGlassIcon, PlusIcon, SidebarSimpleIcon, SquaresFourIcon, StarIcon } from "@phosphor-icons/react";
 import { lyra } from "@slopbot/design-tokens";
 import type { Bootstrap, Conversation } from "@slopbot/contracts";
 import { api, getBootstrap } from "@/lib/client/api";
@@ -16,6 +16,12 @@ type DialogName = "bot" | "connection" | null;
 
 const DEFAULT_SIDEBAR_WIDTH = 280;
 const COLLAPSED_SIDEBAR_WIDTH = 72;
+
+function previewLine(content: string | undefined): string {
+  if (!content) return "No replies yet";
+  const line = content.split(/\r?\n/).find((item) => item.trim().length > 0);
+  return line ? line.trim().replace(/\s+/g, " ") : "No replies yet";
+}
 
 export function SlopApp() {
   const [data, setData] = useState<Bootstrap>();
@@ -185,18 +191,17 @@ function ChatSidebar({ data, selectedBotId, collapsed, onCollapse, onExpand, onB
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
   const bots = data.bots.filter((bot) => `${bot.name} ${bot.handle}`.toLowerCase().includes(needle));
+  const previews = new Map((data.botPreviews ?? []).map((preview) => [preview.botId, preview]));
+  const primaryBot = data.bots[0];
+  const primaryVisible = primaryBot ? bots.some((bot) => bot.id === primaryBot.id) : false;
+  const restBots = primaryVisible && primaryBot ? bots.filter((bot) => bot.id !== primaryBot.id) : bots;
 
   if (collapsed) return (
     <div className="flex min-w-0 flex-1 flex-col">
-      <div className="scrollbar-thin flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2 py-3">
-        {bots.map((bot) => {
-          const active = selectedBotId === bot.id;
-          return (
-            <button aria-current={active ? "page" : undefined} aria-label={bot.name} className={`grid size-11 shrink-0 place-items-center text-white text-xs font-medium transition-colors ${active ? "ring-1 ring-foreground ring-offset-2 ring-offset-background" : "hover:ring-1 hover:ring-border"}`} key={bot.id} onClick={() => onBot(bot.id)} style={{ backgroundColor: bot.color }} title={bot.name} type="button">
-              {bot.name.slice(0, 1).toUpperCase()}
-            </button>
-          );
-        })}
+      <div className="scrollbar-thin flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2 pt-6 pb-3">
+        {primaryVisible && primaryBot ? <RailBot active={selectedBotId === primaryBot.id} bot={primaryBot} onBot={onBot} primary /> : null}
+        {primaryVisible && restBots.length > 0 ? <div aria-hidden="true" className="my-1 h-px w-6 shrink-0 bg-border" /> : null}
+        {restBots.map((bot) => <RailBot active={selectedBotId === bot.id} bot={bot} key={bot.id} onBot={onBot} />)}
       </div>
       <div className="flex flex-col items-center gap-1 p-2">
         <Button aria-label="Expand sidebar" onClick={onExpand} size="icon-lg" title="Expand sidebar" variant="ghost"><SidebarSimpleIcon className="rotate-180" /></Button>
@@ -228,7 +233,7 @@ function ChatSidebar({ data, selectedBotId, collapsed, onCollapse, onExpand, onB
       <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-2 pb-4">
         {bots.map((bot) => {
           const active = selectedBotId === bot.id;
-          const conversation = data.conversations.find((item) => item.botIds.includes(bot.id));
+          const running = data.conversations.some((item) => item.botIds.includes(bot.id) && item.runStatus === "running");
           return (
             <button
               aria-current={active ? "page" : undefined}
@@ -240,7 +245,7 @@ function ChatSidebar({ data, selectedBotId, collapsed, onCollapse, onExpand, onB
               <span className="grid size-9 shrink-0 place-items-center text-[11px] font-medium text-white" style={{ backgroundColor: bot.color }}>{bot.name.slice(0, 1).toUpperCase()}</span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[13px] font-medium">{bot.name}</span>
-                <span className="mt-1 block truncate text-[11px] text-muted-foreground">{conversation?.runStatus === "running" ? "Thinking…" : `@${bot.handle}`}</span>
+                <span className="mt-1 block truncate text-[11px] text-muted-foreground">{running ? "Thinking…" : previewLine(previews.get(bot.id)?.content)}</span>
               </span>
             </button>
           );
@@ -254,6 +259,19 @@ function ChatSidebar({ data, selectedBotId, collapsed, onCollapse, onExpand, onB
         <Button aria-label="Open settings" onClick={onSettings} size="icon-lg" variant="soft"><SquaresFourIcon /></Button>
       </div>
     </div>
+  );
+}
+
+function RailBot({ bot, active, onBot, primary = false }: { bot: Bootstrap["bots"][number]; active: boolean; onBot: (id: string) => void; primary?: boolean }) {
+  return (
+    <button aria-current={active ? "page" : undefined} aria-label={bot.name} className={`relative grid size-11 shrink-0 place-items-center text-white text-xs font-medium transition-colors ${active ? "ring-1 ring-foreground ring-offset-2 ring-offset-background" : "hover:ring-1 hover:ring-border"}`} onClick={() => onBot(bot.id)} style={{ backgroundColor: bot.color }} title={bot.name} type="button">
+      {bot.name.slice(0, 1).toUpperCase()}
+      {primary ? (
+        <span aria-hidden="true" className="pointer-events-none absolute -right-1 -bottom-1 grid size-4 place-items-center rounded-full bg-background text-foreground ring-1 ring-border">
+          <StarIcon aria-hidden="true" className="size-2.5" focusable="false" weight="fill" />
+        </span>
+      ) : null}
+    </button>
   );
 }
 

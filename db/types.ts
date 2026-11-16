@@ -1,5 +1,6 @@
 import type {
   Bot,
+  BotPreview,
   ChatMessage,
   Conversation,
   CreateBotInput,
@@ -77,6 +78,7 @@ export interface AppStore {
     status: Conversation["runStatus"],
   ): Promise<void>;
   listMessages(userId: string, conversationId: string): Promise<ChatMessage[]>;
+  listBotPreviews(userId: string): Promise<BotPreview[]>;
   addMessage(userId: string, input: NewMessage): Promise<ChatMessage>;
 
   listIntegrations(userId: string): Promise<Integration[]>;
