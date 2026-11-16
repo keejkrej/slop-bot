@@ -12,7 +12,7 @@ A single-tenant personal bot club for Android, web, and desktop. Create custom b
 - **Proactive automations:** user-managed one-time or five-field cron schedules in an IANA timezone, bound to a bot's existing conversation, with durable runs, busy queuing, catch-up coalescing, and an in-app Activity view on web and desktop.
 - **Durable runs:** fenced per-conversation runs with idempotent message, approval, and scheduled starts; approval decisions resume through a public persistent seam.
 - **Connections:** custom Streamable HTTP MCP, OAuth discovery + dynamic client registration + PKCE, and optional encrypted API-key headers for providers such as Composio.
-- **Native capabilities:** Parallel Search, per-bot Mem0 memory, just-in-time Vercel Sandbox computers, and AgentMail sends with durable signed approval/resume.
+- **Native capabilities:** Parallel Search, durable file-backed memory with user-confirmed instructions and approval-gated deletion, and just-in-time Vercel Sandbox computers.
 - **Desktop:** Electrobun with the native system webview (WKWebView, WebView2, or WebKitGTK). Its outbound bridge reaches MCP servers on your computer without opening an inbound cloud-accessible port.
 - **Application layer:** Effect 4 services, Layers, typed errors, and dependency injection for storage, authentication, and MCP.
 
@@ -25,6 +25,12 @@ Runs are the durable record for regular messages, approvals, and scheduled work.
 `FileStore` is single-process and intended for local development; production requires Postgres.
 
 See [always-on.md](docs/architecture/always-on.md), [scheduling.md](docs/architecture/scheduling.md), and [run-recovery.md](docs/architecture/run-recovery.md).
+
+## Memory and tool permissions
+
+Memory is a small, validated markdown tree stored in the same database as the rest of the app. `instructions.md` is global to the user and read-only to the model; `index.md`, `reported.md`, `notes/*.md`, and `progress/*.md` are conversation-scoped. Only the always-on core loads at run start; notes and progress are browsed on demand. The Memory settings tab supports editing instructions, browsing files, exporting a snapshot, and explicit path-scoped forget. See [memory.md](docs/architecture/memory.md).
+
+MCP tools are read-only by default. Each connection can grant a finite, explicit list of write tools; there is no blanket write toggle. A granted write still pauses for a signed, expiring approval and is rechecked at execution time against the current connection, bot selection, and risk. Composio executors are evaluated recursively and are never grantable. See [tool-permissions.md](docs/architecture/tool-permissions.md).
 
 ## Run locally
 
@@ -173,7 +179,7 @@ No local MCP URL or listening port is made available to the cloud. Tool argument
 
 ### 6. Scheduler tick
 
-Production uses a static Vercel Schedule in `apps/web/vercel.json` that POSTs `/api/cron/tick` every 15 minutes. Set a secret:
+Production uses a static Vercel Schedule in `apps/web/vercel.json`: the `schedules` entry `proactive-tick` POSTs `/api/cron/tick` every 15 minutes. Set a secret:
 
 ```dotenv
 CRON_SECRET=<openssl rand -hex 32>
@@ -184,6 +190,8 @@ CRON_SECRET=<openssl rand -hex 32>
 ## Deploy to Vercel
 
 Use `apps/web` as the Vercel project's root directory. Install workspace dependencies and run `pnpm build` for the web project. The Next.js configuration in `apps/web/next.config.ts` enables `withWorkflow` and generates the workflow routes.
+
+Deployment is CLI-only: the project's Git integration is disabled, so a push does not deploy. Follow [release-runbook.md](docs/operations/release-runbook.md) for the preconditions, migration order, explicit production deploy, schedule verification, and rollback rules.
 
 Required production environment:
 
@@ -210,14 +218,23 @@ pnpm build:desktop
 pnpm --filter @slopbot/mobile export:android
 ```
 
-The repository includes unit tests for shared contracts, persistence/secret isolation, desktop-job idempotency, Effect service injection, schedule-time calculation, automation storage, cron auth, and run recovery. The local fixture at `tests/fixtures/local-mcp-server.mjs` provides a loopback-only read-only MCP tool for bridge testing.
+The repository includes unit tests for shared contracts, persistence/secret isolation, desktop-job idempotency and claim/delivery, Effect service injection, schedule-time calculation, automation storage, cron auth, run recovery, tool risk and write grants, gated MCP execution, file memory, sanitized run telemetry, and replay evals. The local fixture at `tests/fixtures/local-mcp-server.mjs` provides a loopback-only read-only MCP tool for bridge testing.
+
+The Postgres integration suites skip when `TEST_DATABASE_URL` is unset. Point it at a disposable database and run the full suite serially:
+
+```bash
+pnpm exec dotenv -e .env.test.local -- pnpm exec vitest run
+```
+
+The schema is applied with a transaction-scoped advisory lock, and the suites clean up their own rows.
 
 ## Intentional MVP boundaries
 
 - A chat has exactly one bot. Replies are bounded to six model steps.
 - Clients poll persisted messages; resumable token-by-token streaming is not yet exposed.
-- MCP tools are exposed only when explicitly marked read-only; general writes remain blocked.
-- Proactive results stay in the in-app Activity view. There is no Slack, Telegram, inbound email, or push delivery channel, and no background memory dreaming or heartbeat loop.
-- Idempotency keys reduce duplicate work but do not guarantee exactly-once external side effects.
+- MCP tools are read-only by default. A connection can grant a finite list of write tools, but each granted write still requires a signed, expiring approval; there is no blanket write toggle.
+- Memory is local and file-backed. There is no Mem0, AgentMail, or other external memory/email service, and no background memory dreaming or heartbeat loop.
+- Proactive results stay in the in-app Activity view. There is no Slack, Telegram, inbound email, or push delivery channel.
+- Idempotency keys reduce duplicate work but do not guarantee exactly-once external side effects. The MCP `_meta` idempotency hint is inert unless a provider chooses to honor it.
 - Bots do not autonomously create endless conversations or recurse into uncontrolled bot-to-bot loops.
 - This is a personal single-tenant product, not a multi-organization permissions system.

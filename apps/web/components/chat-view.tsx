@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpIcon, MicrophoneIcon, PlusIcon, WaveformIcon } from "@phosphor-icons/react";
-import type { Bot, ChatMessage, ConversationDetail } from "@slopbot/contracts";
+import type { Bot, ChatMessage, ConversationDetail, ToolRisk } from "@slopbot/contracts";
 import { api, getConversation, markConversationRead } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -95,13 +95,31 @@ export function ChatView({ chatId, bots, selectedBotId, onRefresh, onBot }: {
             {detail.messages.map((message) => <MessageBubble key={message.id} message={message} />)}
           </div>
 
-          {detail.pendingActions.map((action) => (
-            <section className="my-8 border border-border bg-muted/50 p-5" key={action.id}>
-              <p className="mb-2 text-[11px] font-medium text-muted-foreground uppercase tracking-[0.16em]">Approval required</p>
-              <p className="message-text mb-5 text-[13px] leading-6">{action.summary}</p>
-              <div className="flex gap-2"><Button disabled={busy} onClick={() => void approve(action.id, true)}>Approve send</Button><Button disabled={busy} onClick={() => void approve(action.id, false)} variant="ghost">Deny</Button></div>
-            </section>
-          ))}
+          {detail.pendingActions.map((action) => {
+            const expired = action.expiresAt ? Date.parse(action.expiresAt) <= Date.now() : false;
+            const waiting = busy || action.status !== "pending" || expired;
+            const args = previewArgs(action.toolArgsRedacted);
+            return (
+              <section className="my-8 border border-border bg-muted/50 p-5" key={action.id}>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-[0.16em]">Approval required</p>
+                  <RiskBadge risk={action.toolRisk} />
+                </div>
+                <p className="message-text mb-4 text-[13px] leading-6">{action.summary}</p>
+                <dl className="mb-4 grid gap-1 text-[11px] leading-5">
+                  <div className="flex gap-2"><dt className="w-20 shrink-0 text-muted-foreground">Tool</dt><dd className="min-w-0 truncate font-medium">{action.toolName ?? "Tool request"}</dd></div>
+                  {action.integrationName ? <div className="flex gap-2"><dt className="w-20 shrink-0 text-muted-foreground">Connection</dt><dd className="min-w-0 truncate">{action.integrationName}</dd></div> : null}
+                  {action.expiresAt ? <div className="flex gap-2"><dt className="w-20 shrink-0 text-muted-foreground">Expires</dt><dd className="min-w-0 truncate">{formatExpiry(action.expiresAt)}</dd></div> : null}
+                </dl>
+                {args ? <pre className="mb-4 max-h-40 overflow-auto border border-border/70 bg-background/60 p-2 text-[10px] leading-4 whitespace-pre-wrap break-all">{args}</pre> : null}
+                {expired ? <p className="mb-4 text-destructive text-xs leading-5" role="alert">This approval expired and can no longer be resumed.</p> : null}
+                <div className="flex gap-2">
+                  <Button disabled={waiting} onClick={() => void approve(action.id, true)}>Approve</Button>
+                  <Button disabled={waiting} onClick={() => void approve(action.id, false)} variant="ghost">Deny</Button>
+                </div>
+              </section>
+            );
+          })}
 
           {runStatus === "queued" ? <RunStatusLine label="Queued…" /> : null}
           {runStatus === "running" ? <RunStatusLine label="Bots are responding in sequence…" /> : null}
@@ -137,8 +155,23 @@ export function ChatView({ chatId, bots, selectedBotId, onRefresh, onBot }: {
   );
 }
 
-function RunStatusLine({ label }: { label: string }) {
-  return (
+function previewArgs(args: Record<string, unknown> | null): string | null {
+  if (!args) return null;
+  const text = JSON.stringify(args);
+  return text.length > 400 ? `${text.slice(0, 399)}…` : text;
+}
+
+function formatExpiry(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString();
+}
+
+function RiskBadge({ risk }: { risk: ToolRisk }) {
+  const tone = risk === "destructive" ? "border-destructive text-destructive" : risk === "write" ? "border-foreground/40 text-foreground" : "border-border text-muted-foreground";
+  return <span className={`shrink-0 border px-1.5 py-0.5 text-[9px] uppercase tracking-[0.08em] ${tone}`}>{risk}</span>;
+}
+
+function RunStatusLine({ label }: { label: string }) {  return (
     <div className="mt-8 inline-flex items-center gap-3 border border-border/70 bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground" role="status">
       <span className="flex gap-1"><i className="size-1 animate-pulse bg-current" /><i className="size-1 animate-pulse bg-current [animation-delay:150ms]" /><i className="size-1 animate-pulse bg-current [animation-delay:300ms]" /></span>
       {label}

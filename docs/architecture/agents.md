@@ -7,8 +7,8 @@ Each bot has four distinct resources:
 ```text
 Identity + instructions (Neon)
 Computer (just-in-time Vercel Sandbox)
-Memory (bot-scoped Mem0)
-Capabilities (global connections + native tools)
+Memory (durable file tree in the store)
+Capabilities (bot-selected connections + native tools)
 ```
 
 Bots do not get long-running VMs. A sandbox is created only when a computer tool is invoked, used for a bounded turn, and stopped in `finally`.
@@ -29,31 +29,32 @@ Sources: [Persistent sandboxes](https://vercel.com/docs/sandbox/concepts/persist
 
 ## Memory is not the system of record
 
-- **Neon:** bots, conversations, messages, connections, run state (`AppStore.runs`, the core record), and approvals.
-- **Mem0:** preferences and learned context, scoped by `agent_id` to one bot and `app_id` to Slop Bot. `run_id` identifies a reply run when useful.
+- **Neon:** bots, conversations, messages, connections, run state (`AppStore.runs`, the core record), approvals, and the durable memory file tree.
 - **Drive:** files produced by a bot, only when persistence is required.
 
-Mem0 writes should use `infer: false` for explicitly attributed facts or role-tagged conversation messages for automatic extraction. Do not query with `AND(user_id, agent_id)` for extraction-produced memories; the default extraction path attributes facts to one speaker, not both.
+Memory is a small, validated markdown tree stored in the same database as the rest of the app. `instructions.md` is global to the user and read-only to the model; `index.md`, `reported.md`, `notes/*.md`, and `progress/*.md` are conversation-scoped. Only the always-on core is loaded at run start; notes and progress are browsed on demand. There is no semantic vector store, remote memory service, or background consolidation. See [memory.md](./memory.md).
 
-Sources: [Mem0 entity-scoped memory](https://docs.mem0.ai/platform/features/entity-scoped-memory), [Mem0 quickstart](https://docs.mem0.ai/platform/quickstart).
+## Capabilities are selected per bot
 
-## Capabilities are global, not assigned per bot
+Each bot has an explicit `integrationIds` allowlist. Only those connections are listed to the model and only those connections can execute tools for that bot; an empty list means no MCP tools at all. Native tools are unaffected. The store still verifies that every connection belongs to the same user, and the 10-connection / 64-tool bounds apply after selection.
 
-Every bot sees the same configured connections and native tools. A global policy layer, not a per-bot allowlist, decides what can execute.
+A global policy layer, not the allowlist alone, decides what can execute. Read-only MCP operations are allowed. Writes and destructive operations are denied unless the connection grants that exact tool in a finite `allowedWriteTools` list, and a granted write still pauses for a signed, expiring approval. There is no blanket write toggle. Composio executors are evaluated recursively: every nested `tool_slug` must be a read operation, and nested `COMPOSIO_EXECUTE_*`, `COMPOSIO_MULTI_EXECUTE_TOOL`, or `COMPOSIO_MANAGE_CONNECTIONS` calls are rejected. A read verb in a tool name or a `readOnlyHint` annotation is a hint, not a security boundary. See [tool-permissions.md](./tool-permissions.md).
 
 Native tools:
 
 - `web_search`: Parallel Search.
-- `memory_search` / `memory_save`: Mem0, scoped to the calling bot.
-- `send_email`: AgentMail, requiring explicit approval.
+- `memory_view`, `memory_create`, `memory_str_replace`, `memory_insert`, `memory_rename`: durable file memory scoped to the calling bot's conversation.
+- `memory_delete`: durable file memory deletion, requiring explicit user approval.
 - `computer_*`: bounded just-in-time sandbox operations.
 - Custom/cloud/desktop MCP tools, with read/execute policy checks.
 
-Sources: [Parallel Search quickstart](https://docs.parallel.ai/search/search-quickstart), [AgentMail send message](https://docs.agentmail.to/api-reference/inboxes/messages/send), [Composio multi execute](https://docs.composio.dev/toolkits/meta-tools/multi_execute_tool).
+Sources: [Parallel Search quickstart](https://docs.parallel.ai/search/search-quickstart), [Composio multi execute](https://docs.composio.dev/toolkits/meta-tools/multi_execute_tool).
 
 ## Desktop local MCP
 
 The desktop renders the same web app. A private endpoint such as `http://127.0.0.1:<port>/mcp` becomes a desktop-pending connection. Electrobun discovers and claims it through the authenticated outbound bridge. Hosted agents receive schemas and invoke tools through Workflow hooks; the hosted API never connects inbound to the laptop's port.
+
+Desktop tools are read-only. The bridge claims a job with a short lease before executing it, and the server records execution and hook delivery separately. A completed job can be re-posted to retry delivery, and an already-delivered result is acknowledged without resuming the hook again. Results are bounded and redacted on the desktop before they leave the machine and again on the server before persistence or delivery.
 
 ## Proactive work
 
@@ -67,7 +68,9 @@ See [always-on.md](./always-on.md) for the design and boundaries, and [schedulin
 - Runs are fenced and exclusive per conversation; a stale writer cannot overwrite newer state.
 - Run timers and `recoverRuns` are a durable recovery layer for approval timeouts, lease expiry, and start handoff. Admission writes the timers and the scheduler tick runs recovery by default.
 - `RunStore.completeWithMessage` writes the bot outbox message and the terminal run state atomically.
-- Email and other consequential writes pause for signed user approval and resume durably.
-- MCP execution is guarded by operation, including every nested `tool_slug` in Composio multi-execute.
+- Consequential writes, such as deleting a memory file, pause for signed user approval and resume durably.
+- MCP execution is guarded by operation, including every nested `tool_slug` in Composio execute and multi-execute; nested executors and connection mutations are rejected.
+- A write approval is rechecked at execution time against the current connection, bot selection, tool risk, and expiry. A revoked grant or a widened risk fails closed.
+- MCP results are treated as untrusted: sensitive keys are redacted, depth and collection sizes are capped, and oversized results become a structured envelope rather than invalid JSON.
 - Sandbox handles and live MCP clients never cross durable-step serialization boundaries.
 - Compute and memory retrieval happen only on demand to control both latency and spend.

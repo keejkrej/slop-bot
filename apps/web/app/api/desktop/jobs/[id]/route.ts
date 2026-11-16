@@ -1,10 +1,11 @@
 import { Effect } from "effect";
 import { resumeHook } from "workflow/api";
+import { HookNotFoundError } from "workflow/errors";
 import { z } from "zod";
 import { requireDesktopUser } from "@/lib/server/desktop";
+import { recordDesktopJobResult } from "@/lib/server/desktop-jobs";
 import { fromPromise, runApp, withStore } from "@/lib/server/effect";
-import { ApiError, parseJson } from "@/lib/server/http";
-import { hookToken } from "@workflows/desktop-tools";
+import { parseJson } from "@/lib/server/http";
 
 const resultSchema = z.object({
   deviceId: z.string().min(8).max(100),
@@ -17,12 +18,14 @@ export function POST(request: Request, context: { params: Promise<{ id: string }
   return runApp(Effect.gen(function* () {
     const user = yield* fromPromise(() => requireDesktopUser(request));
     const [{ id }, input] = yield* fromPromise(() => Promise.all([context.params, parseJson(request, resultSchema)]));
-    yield* withStore(async (store) => {
-      const job = await store.getDesktopJob(user.id, id);
-      if (!job || job.deviceId !== input.deviceId) throw new ApiError(404, "Desktop job not found.");
-      if (!(await store.completeDesktopJob(user.id, id, input))) throw new ApiError(409, "Desktop job was already completed.");
-    });
-    yield* fromPromise(() => resumeHook(hookToken(id), { ok: input.ok, output: input.output, error: input.error }));
-    return Response.json({ ok: true });
+    const outcome = yield* withStore((store) => recordDesktopJobResult({
+      store,
+      userId: user.id,
+      jobId: id,
+      result: input,
+      resume: (token, payload) => resumeHook(token, payload),
+      isHookMissing: (error) => HookNotFoundError.is(error),
+    }));
+    return Response.json(outcome.body, { status: outcome.status });
   }));
 }

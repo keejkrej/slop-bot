@@ -52,6 +52,46 @@ export const pendingActionStatusSchema = z.enum([
   "expired",
 ]);
 
+/**
+ * Risk is a policy hint, never a safety guarantee. Unknown tools default to
+ * `write` so they stay denied until an explicit per-tool grant exists.
+ */
+export const toolRiskSchema = z.enum(["read", "write", "destructive"]);
+export type ToolRisk = z.infer<typeof toolRiskSchema>;
+
+export const MAX_ALLOWED_WRITE_TOOLS = 20;
+export const MAX_TOOL_NAME_LENGTH = 128;
+
+/** A plain MCP tool name. Wildcards and free-form selectors are rejected. */
+export const toolNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_TOOL_NAME_LENGTH)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/, "Use a plain tool name.");
+
+/**
+ * Public approval DTO. It intentionally omits model messages, tool-call
+ * signatures, and any unsanitized argument payload.
+ */
+export const pendingActionSchema = z.object({
+  id: z.string(),
+  botId: z.string(),
+  kind: z.literal("tool_approval"),
+  summary: z.string(),
+  status: pendingActionStatusSchema,
+  runId: z.string().nullable().default(null),
+  providerApprovalId: z.string().nullable().default(null),
+  toolName: z.string().nullable().default(null),
+  toolArgsRedacted: z.record(z.string(), z.unknown()).nullable().default(null),
+  toolRisk: toolRiskSchema.default("read"),
+  idempotencyKey: z.string().nullable().default(null),
+  expiresAt: z.string().nullable().default(null),
+  integrationId: z.string().nullable().default(null),
+  integrationName: z.string().nullable().default(null),
+  createdAt: z.string(),
+});
+
 export const runTriggerSchema = z
   .object({
     kind: z.enum(["message", "approval", "scheduled"]),
@@ -219,6 +259,8 @@ export const integrationSchema = z.object({
   status: z.enum(["connected", "authorization_required", "error"]),
   toolCount: z.number().int().nonnegative(),
   lastError: z.string().nullable(),
+  /** Explicit per-tool write grants. Empty means no non-read MCP tools. */
+  allowedWriteTools: z.array(z.string()).default([]),
   createdAt: z.string(),
 });
 
@@ -231,6 +273,27 @@ export const createIntegrationSchema = z.object({
   platform: z.enum(["web", "android"]).default("web"),
   headerName: z.string().trim().regex(/^[A-Za-z0-9-]+$/).max(60).optional(),
   headerValue: z.string().max(4_096).optional(),
+  /** Backwards compatible: omitted means no write tools are permitted. */
+  allowedWriteTools: z.array(toolNameSchema).max(MAX_ALLOWED_WRITE_TOOLS).default([]),
+});
+
+/** Explicit finite allowlist. There is deliberately no blanket write toggle. */
+export const updateIntegrationPolicySchema = z.object({
+  allowedWriteTools: z.array(toolNameSchema).max(MAX_ALLOWED_WRITE_TOOLS),
+});
+
+export const integrationToolSummarySchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  risk: toolRiskSchema,
+  allowed: z.boolean(),
+});
+
+export const integrationToolsResponseSchema = z.object({
+  integrationId: z.string(),
+  tools: z.array(integrationToolSummarySchema),
+  /** False when the provider listing could not be read; nothing is permitted. */
+  listingAvailable: z.boolean(),
 });
 
 export const userSchema = z.object({
@@ -260,6 +323,67 @@ export const markReadSchema = z.object({
 /** Conversation id -> nonnegative unread bot-message count. */
 export const unreadCountsSchema = z.record(z.string(), z.number().int().nonnegative());
 
+/** One file in the user-facing memory browser. Content is fetched separately. */
+export const memoryDirectoryEntrySchema = z.object({
+  path: z.string(),
+  kind: z.enum(["instructions", "index", "reported", "note", "progress"]),
+  chars: z.number().int().nonnegative(),
+  version: z.number().int().positive(),
+  updatedAt: z.string(),
+});
+
+export const memoryInstructionsSchema = z.object({
+  content: z.string(),
+  version: z.number().int().positive(),
+  updatedAt: z.string(),
+});
+
+export const memoryScopeSchema = z.object({
+  conversationId: z.string(),
+  botId: z.string(),
+});
+
+export const memoryDirectoryResponseSchema = z.object({
+  scope: memoryScopeSchema.nullable(),
+  instructions: memoryInstructionsSchema.nullable(),
+  files: z.array(memoryDirectoryEntrySchema),
+  /** Present when no scope was selected: the user's permitted conversation scopes. */
+  scopes: z.array(memoryScopeSchema).default([]),
+});
+
+export const memoryFileSchema = z.object({
+  path: z.string(),
+  content: z.string(),
+  version: z.number().int().positive(),
+  source: z.enum(["user", "assistant", "system", "tool", "web"]),
+  provenance: z.string(),
+  sourceRunId: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const memoryFileResponseSchema = z.object({
+  file: memoryFileSchema.nullable(),
+});
+
+export const memoryExportResponseSchema = z.object({
+  scope: memoryScopeSchema,
+  files: z.array(memoryFileSchema),
+  count: z.number().int().nonnegative(),
+  totalChars: z.number().int().nonnegative(),
+});
+
+export const updateMemoryInstructionsSchema = z.object({
+  content: z.string().max(200_000),
+  expectedVersion: z.number().int().positive().nullable(),
+});
+
+export const forgetMemorySchema = z.object({
+  conversationId: z.string().trim().min(1),
+  botId: z.string().trim().min(1),
+  paths: z.array(z.string().trim().min(1)).min(1).max(100),
+});
+
 export const bootstrapSchema = z.object({
   user: userSchema,
   bots: z.array(botSchema),
@@ -273,16 +397,7 @@ export const bootstrapSchema = z.object({
 export const conversationDetailSchema = z.object({
   conversation: conversationSchema,
   messages: z.array(messageSchema),
-  pendingActions: z.array(z.object({
-    id: z.string(),
-    botId: z.string(),
-    kind: z.literal("tool_approval"),
-    summary: z.string(),
-    status: pendingActionStatusSchema,
-    runId: z.string().nullable().default(null),
-    providerApprovalId: z.string().nullable().default(null),
-    createdAt: z.string(),
-  })).default([]),
+  pendingActions: z.array(pendingActionSchema).default([]),
 });
 
 export const connectResponseSchema = z.object({
@@ -300,6 +415,50 @@ export type CreateBotInput = z.infer<typeof createBotSchema>;
 export type RunStatus = z.infer<typeof runStatusSchema>;
 export type ConversationRunStatus = z.infer<typeof conversationRunStatusSchema>;
 export type PendingActionStatus = z.infer<typeof pendingActionStatusSchema>;
+export type PendingActionPublic = z.infer<typeof pendingActionSchema>;
+
+/**
+ * Project a stored approval into the public DTO. Model messages, tool-call
+ * signatures, and raw arguments are never copied.
+ */
+export function toPublicPendingAction(action: {
+  id: string;
+  botId: string;
+  kind: "tool_approval";
+  summary: string;
+  status: PendingActionStatus;
+  runId?: string | null;
+  providerApprovalId?: string | null;
+  toolName?: string | null;
+  toolArgsRedacted?: Record<string, unknown> | null;
+  toolRisk?: ToolRisk;
+  idempotencyKey?: string | null;
+  expiresAt?: string | null;
+  integrationId?: string | null;
+  integrationName?: string | null;
+  createdAt: string;
+}): PendingActionPublic {
+  return pendingActionSchema.parse({
+    id: action.id,
+    botId: action.botId,
+    kind: action.kind,
+    summary: action.summary,
+    status: action.status,
+    runId: action.runId ?? null,
+    providerApprovalId: action.providerApprovalId ?? null,
+    toolName: action.toolName ?? null,
+    toolArgsRedacted: action.toolArgsRedacted ?? null,
+    toolRisk: action.toolRisk ?? "read",
+    idempotencyKey: action.idempotencyKey ?? null,
+    expiresAt: action.expiresAt ?? null,
+    integrationId: action.integrationId ?? null,
+    integrationName: action.integrationName ?? null,
+    createdAt: action.createdAt,
+  });
+}
+export type UpdateIntegrationPolicyInput = z.infer<typeof updateIntegrationPolicySchema>;
+export type IntegrationToolSummary = z.infer<typeof integrationToolSummarySchema>;
+export type IntegrationToolsResponse = z.infer<typeof integrationToolsResponseSchema>;
 export type RunTrigger = z.infer<typeof runTriggerSchema>;
 export type Run = z.infer<typeof runSchema>;
 export type RunEvent = z.infer<typeof runEventSchema>;
@@ -320,6 +479,15 @@ export type CreateIntegrationInput = z.infer<typeof createIntegrationSchema>;
 export type User = z.infer<typeof userSchema>;
 export type BotPreview = z.infer<typeof botPreviewSchema>;
 export type ConversationReadState = z.infer<typeof conversationReadStateSchema>;
+export type MemoryDirectoryEntry = z.infer<typeof memoryDirectoryEntrySchema>;
+export type MemoryInstructions = z.infer<typeof memoryInstructionsSchema>;
+export type MemoryScope = z.infer<typeof memoryScopeSchema>;
+export type MemoryDirectoryResponse = z.infer<typeof memoryDirectoryResponseSchema>;
+export type MemoryFile = z.infer<typeof memoryFileSchema>;
+export type MemoryFileResponse = z.infer<typeof memoryFileResponseSchema>;
+export type MemoryExportResponse = z.infer<typeof memoryExportResponseSchema>;
+export type UpdateMemoryInstructionsInput = z.infer<typeof updateMemoryInstructionsSchema>;
+export type ForgetMemoryInput = z.infer<typeof forgetMemorySchema>;
 export type MarkReadInput = z.infer<typeof markReadSchema>;
 export type UnreadCounts = z.infer<typeof unreadCountsSchema>;
 export type Bootstrap = z.infer<typeof bootstrapSchema>;

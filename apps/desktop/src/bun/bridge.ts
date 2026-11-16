@@ -1,6 +1,10 @@
 import type { DesktopStore } from "./store";
 import { callLocalTool, discoverTools } from "./mcp";
+import { boundDesktopResult, redactDesktopText } from "./result";
 import type { LocalServer } from "../shared/rpc";
+
+type DesktopConfig = Awaited<ReturnType<DesktopStore["read"]>>;
+type BridgeResult = { ok: boolean; output?: unknown; error?: string };
 
 export type BridgeJob = {
 	id: string;
@@ -66,7 +70,7 @@ export class DesktopBridge {
 			const response = await this.request(`/api/desktop/jobs?deviceId=${encodeURIComponent(config.deviceId)}`, undefined, config);
 			if (!response.ok) throw new Error(`Bridge polling failed (${response.status}).`);
 			const { jobs = [] } = await response.json() as { jobs?: BridgeJob[] };
-			for (const job of jobs) void this.execute(job);
+			for (const job of jobs) void this.claimAndExecute(job, config);
 			await this.claimPending(config);
 			this.onStatus?.("online");
 		} catch (error) {
@@ -105,21 +109,51 @@ export class DesktopBridge {
 		if (connections.length > 0) await this.sync();
 	}
 
-	private async execute(job: BridgeJob): Promise<void> {
-		const config = await this.store.read();
+	private async claimAndExecute(job: BridgeJob, config: DesktopConfig): Promise<void> {
+		try {
+			const response = await this.request(`/api/desktop/jobs/${job.id}/claim`, { deviceId: config.deviceId }, config);
+			// Another bridge instance owns this job, or it already finished.
+			if (!response.ok) return;
+			const { job: claimed } = await response.json() as { job?: BridgeJob };
+			await this.execute(claimed ?? job, config);
+		} catch (error) {
+			this.onStatus?.("error", error instanceof Error ? error.message : "Could not claim desktop job.");
+		}
+	}
+
+	private async execute(job: BridgeJob, config: DesktopConfig): Promise<void> {
 		const server = config.servers.find((item) => item.integrationId === job.integrationId);
-		let result: { ok: boolean; output?: unknown; error?: string };
+		let result: BridgeResult;
 		try {
 			if (!server) throw new Error("The local MCP server is no longer configured.");
 			const tool = server.tools.find((item) => item.name === job.toolName);
 			if (!tool?.readOnly) throw new Error("Only read-only local tools can be called.");
-			result = { ok: true, output: await callLocalTool(server.url, job.toolName, job.args) };
+			result = { ok: true, output: boundDesktopResult(await callLocalTool(server.url, job.toolName, job.args)) };
 		} catch (error) {
-			result = { ok: false, error: error instanceof Error ? error.message : "Local tool failed." };
+			result = {
+				ok: false,
+				error: redactDesktopText(error instanceof Error ? error.message : "Local tool failed.").slice(0, 1_000),
+			};
 		}
-		await this.request(`/api/desktop/jobs/${job.id}`, { deviceId: config.deviceId, ...result }, config).catch((error) => {
-			this.onStatus?.("error", error instanceof Error ? error.message : "Could not return tool result.");
-		});
+		await this.deliver(job.id, config, result);
+	}
+
+	private async deliver(jobId: string, config: DesktopConfig, result: BridgeResult): Promise<void> {
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			try {
+				const response = await this.request(`/api/desktop/jobs/${jobId}`, { deviceId: config.deviceId, ...result }, config);
+				// A 200 is terminal: either delivered, or the server recorded a
+				// terminal delivery failure (expired job / no live hook).
+				if (response.ok) return;
+				// 404/409 mean the job is gone or owned elsewhere; retrying cannot help.
+				if (response.status === 404 || response.status === 409) return;
+				if (response.status >= 400 && response.status < 500) return;
+			} catch (error) {
+				this.onStatus?.("error", error instanceof Error ? error.message : "Could not return tool result.");
+			}
+			await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+		}
+		this.onStatus?.("error", "Could not deliver the desktop tool result.");
 	}
 
 	private request(path: string, body: unknown, config: { apiUrl: string; token: string }): Promise<Response> {

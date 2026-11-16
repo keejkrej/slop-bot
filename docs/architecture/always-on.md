@@ -100,14 +100,47 @@ These are recovered from the current source, not aspirational.
   (`MAX_CHAT_BOTS = 1`). Automations resolve that conversation rather than
   creating new ones, so proactive output lands where the user already talks to
   the bot.
-- **Mem0 is not the system of record.** Mem0 holds preferences and learned
-  context scoped by `agent_id`/`app_id`; durable state lives in the store.
+- **Memory is not the system of record.** Durable file memory lives in the
+  store alongside runs; it never replaces run state or messages.
 - **Bounded sandbox.** `computerRun` creates a non-persistent sandbox with a
   short timeout, `deny-all` network policy, and a `finally` stop. No VM outlives
   a turn.
+- **Desktop jobs are claimed and delivered separately.** The bridge claims a
+  job with a short lease before executing it. Execution and hook delivery are
+  tracked separately, so a completed job can retry delivery without re-running
+  the local tool, and an already-delivered result is acknowledged without
+  resuming the hook again. Results are bounded and redacted on both sides.
 - **User-managed Automations and in-app activity.** Users create, pause, and
   run tasks in the app; results and run history appear in the in-app activity
   view. There are no external delivery channels.
+
+## Observability and replay evals
+
+- **Trace events share the run log.** `run-telemetry.ts` writes typed,
+  sanitized envelopes through `RunStore.appendEvent` with a natural
+  `run + span/tool-call` dedupe key. Categories are `run`, `model`, `tool`, and
+  `approval`; phases are `start` and `end`.
+- **Allowlist, not transcripts.** A trace event may carry a model name, tool
+  name, nonsecret integration id, tool-call id, duration, bounded status/error
+  taxonomy, and input/output token usage from the actual generation result.
+  Raw prompts, chain-of-thought, model messages, MCP request/result bodies,
+  tool inputs/outputs, and credentials are never stored. Unknown or malformed
+  stored rows fail closed when read.
+- **Own-user run detail.** `GET /api/activity/[runId]` authenticates the user,
+  verifies run ownership, and returns only the run projection plus sanitized
+  traces. The Activity view expands a run to show lifecycle, token, and latency
+  metadata; historical runs without traces still render.
+- **No exporter by default.** The installed `WorkflowAgent` telemetry is only
+  enabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is explicitly configured, and
+  input/output recording stays off. The default path stores backend usage and
+  tool events only.
+- **Replay evals use the public executor.** `agent-turn.ts` exposes
+  `executeAgentTurn(request, factory)`; production uses the normal
+  `WorkflowAgent` factory. Six recorded fixtures replay real result shapes
+  through the same decision logic and store transitions: scheduled duplicate
+  and empty reports, memory-delete approval pause and resume, unselected MCP
+  blocking, and sanitized tool exceptions. This is an executor +
+  store-transition harness, not a full workflow-runtime E2E test.
 
 ## Why one protected database tick
 
@@ -130,13 +163,17 @@ trigger without changing the admission logic. See
   chain; it is for local development, not multi-instance deployment.
 - **No exactly-once external side effects.** Idempotency keys reduce duplicate
   sends but cannot make an external provider exactly-once.
-- **No general write-MCP support.** MCP tools are exposed only when marked
-  read-only; general writes remain blocked.
+- **Finite write grants, not general write-MCP.** MCP tools are read-only by
+  default. A connection may grant a finite list of write tools, and each
+  granted write still requires a signed, expiring approval that is rechecked at
+  execution time. There is no blanket write toggle. See
+  [tool-permissions.md](./tool-permissions.md).
 - **Proactive results are quiet by default.** A scheduled turn that has nothing
   to say returns the exact `NO_REPLY` sentinel and records no message.
 - **No proactive email, push, dreaming, or heartbeats.** There is no outbound
   notification channel for unattended results and no background reflection loop.
-  (`send_email` exists only as an approved, in-turn tool.)
+  A scheduled run may update `reported.md`; an identical repeat is suppressed
+  rather than re-emitted.
 - **No long-lived VMs.** Compute is per-turn and stopped in `finally`.
 - **Public Vercel Schedules is a beta.** If a managed schedule is adopted later,
   its documented limits apply; see

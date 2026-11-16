@@ -19,6 +19,7 @@ import {
   type User,
 } from "@slopbot/contracts";
 import { decryptSecret, encryptSecret } from "./crypto";
+import { defaultApprovalExpiresAt, isPendingActionExpired } from "../apps/web/lib/server/tool-permissions";
 import {
   conversationProjectionFor,
   isActiveRunStatus,
@@ -31,6 +32,7 @@ import {
   type AutomationTask,
   type AutomationTaskPatch,
   type ClaimApprovalRunInput,
+  type ClaimDesktopJobInput,
   type ClaimDueAutomationTasksInput,
   type ClaimMessageRunInput,
   type ClaimRunInput,
@@ -40,6 +42,7 @@ import {
   type CompleteRunWithMessageInput,
   type CompleteRunWithMessageResult,
   type DesktopJob,
+  type DesktopJobDelivery,
   type NewAutomationTask,
   type NewDesktopJob,
   type NewIntegration,
@@ -48,6 +51,8 @@ import {
   type OAuthState,
   type PendingAction,
   type ListRecoverableRunsInput,
+  type MemoryScope,
+  type MemoryStore,
   type ReadStateStore,
   type ReleaseRunTimerInput,
   type RunStore,
@@ -56,6 +61,11 @@ import {
   StoreDomainError,
 } from "./types";
 import type { IntegrationSecret } from "../apps/web/lib/server/mcp";
+import {
+  MemoryConflictError,
+  type MemoryFile,
+  type MemoryWritePlan,
+} from "../apps/web/lib/server/memory-files";
 
 type RunClaim = {
   userId: string;
@@ -65,6 +75,12 @@ type RunClaim = {
 };
 
 type ConversationRead = ConversationReadState & { userId: string };
+
+type ScopedMemoryFile = MemoryFile & {
+  userId: string;
+  conversationId: string;
+  botId: string;
+};
 
 type FileState = {
   bots: Array<Bot & { userId: string }>;
@@ -82,6 +98,7 @@ type FileState = {
   runClaims: RunClaim[];
   automationTasks: AutomationTask[];
   automationOccurrences: AutomationOccurrence[];
+  memoryFiles: ScopedMemoryFile[];
 };
 
 /** A tick lease older than this may be reclaimed after a crashed tick. */
@@ -92,6 +109,16 @@ const publicBot = ({ userId: _userId, ...bot }: Bot & { userId: string }): Bot =
 const publicConversation = ({ userId: _userId, ...item }: Conversation & { userId: string }): Conversation => item;
 const publicMessage = ({ userId: _userId, ...item }: ChatMessage & { userId: string }): ChatMessage => item;
 const publicIntegration = ({ userId: _userId, ...item }: Integration & { userId: string }): Integration => item;
+const publicMemoryFile = ({
+  userId: _userId,
+  conversationId: _conversationId,
+  botId: _botId,
+  ...file
+}: ScopedMemoryFile): MemoryFile => file;
+const memoryInScope = (file: ScopedMemoryFile, scope: MemoryScope): boolean =>
+  file.userId === scope.userId &&
+  file.conversationId === scope.conversationId &&
+  file.botId === scope.botId;
 
 export class FileStore implements AppStore {
   private state: FileState | undefined;
@@ -135,6 +162,13 @@ export class FileStore implements AppStore {
     getUnreadCounts: (userId) => this.getUnreadCounts(userId),
   };
 
+  readonly memory: MemoryStore = {
+    list: (scope) => this.listMemory(scope),
+    read: (scope, path) => this.readMemory(scope, path),
+    apply: (scope, plan) => this.applyMemory(scope, plan),
+    delete: (scope, paths) => this.deleteMemory(scope, paths),
+  };
+
   constructor(private readonly file = resolve(process.cwd(), ".data", "store.json")) {}
 
   private async load(): Promise<FileState> {
@@ -142,6 +176,19 @@ export class FileStore implements AppStore {
     try {
       this.state = JSON.parse(await readFile(this.file, "utf8")) as FileState;
       this.state.desktopJobs ??= [];
+      this.state.desktopJobs = this.state.desktopJobs.map((job) => ({
+        ...job,
+        runId: job.runId ?? null,
+        stepKey: job.stepKey ?? null,
+        attempt: job.attempt ?? null,
+        claimedBy: job.claimedBy ?? null,
+        claimedAt: job.claimedAt ?? null,
+        leaseExpiresAt: job.leaseExpiresAt ?? null,
+        deliveryStatus: job.deliveryStatus ?? "pending",
+        deliveryAttempts: job.deliveryAttempts ?? 0,
+        deliveryError: job.deliveryError ?? null,
+        deliveredAt: job.deliveredAt ?? null,
+      }));
       this.state.pendingActions ??= [];
       this.state.readStates ??= [];
       this.state.runs ??= [];
@@ -150,6 +197,7 @@ export class FileStore implements AppStore {
       this.state.runClaims ??= [];
       this.state.automationTasks ??= [];
       this.state.automationOccurrences ??= [];
+      this.state.memoryFiles ??= [];
       this.state.automationTasks = this.state.automationTasks.map((task) => ({
         ...task,
         status: task.status ?? "active",
@@ -178,6 +226,18 @@ export class FileStore implements AppStore {
         ...action,
         runId: action.runId ?? null,
         providerApprovalId: action.providerApprovalId ?? null,
+        toolName: action.toolName ?? null,
+        toolArgsRedacted: action.toolArgsRedacted ?? null,
+        toolRisk: action.toolRisk ?? "read",
+        idempotencyKey: action.idempotencyKey ?? null,
+        expiresAt: action.expiresAt ?? null,
+        integrationId: action.integrationId ?? null,
+        integrationName: action.integrationName ?? null,
+        argsDigest: action.argsDigest ?? null,
+      }));
+      this.state.integrations = this.state.integrations.map((integration) => ({
+        ...integration,
+        allowedWriteTools: integration.allowedWriteTools ?? [],
       }));
       this.state.messages = this.state.messages.map((message) => ({
         ...message,
@@ -246,6 +306,7 @@ export class FileStore implements AppStore {
         runClaims: [],
         automationTasks: [],
         automationOccurrences: [],
+        memoryFiles: [],
       };
       await this.persistState(this.state);
     }
@@ -301,6 +362,13 @@ export class FileStore implements AppStore {
   async deleteBot(userId: string, botId: string): Promise<void> {
     await this.commit((state) => {
       state.bots = state.bots.filter((bot) => !(bot.userId === userId && bot.id === botId));
+      // Remove this bot's scoped memory so it cannot outlive the bot. Global
+      // instructions (empty botId) and other bots' scopes are preserved.
+      if (botId) {
+        state.memoryFiles = state.memoryFiles.filter(
+          (file) => !(file.userId === userId && file.botId === botId),
+        );
+      }
       state.integrations.forEach((integration) => {
         if (integration.userId === userId) void integration;
       });
@@ -489,6 +557,105 @@ export class FileStore implements AppStore {
     return counts;
   }
 
+  private async listMemory(scope: MemoryScope): Promise<MemoryFile[]> {
+    return (await this.load()).memoryFiles
+      .filter((file) => memoryInScope(file, scope))
+      .map(publicMemoryFile)
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  private async readMemory(scope: MemoryScope, path: string): Promise<MemoryFile | null> {
+    const file = (await this.load()).memoryFiles.find(
+      (item) => memoryInScope(item, scope) && item.path === path,
+    );
+    return file ? publicMemoryFile(file) : null;
+  }
+
+  private async applyMemory(scope: MemoryScope, plan: MemoryWritePlan): Promise<MemoryFile | null> {
+    return this.commit((state) => {
+      if (plan.op === "create") {
+        if (plan.expectedVersion !== null) {
+          throw new MemoryConflictError("create must not carry an expected version");
+        }
+        if (state.memoryFiles.some((file) => memoryInScope(file, scope) && file.path === plan.path)) {
+          throw new MemoryConflictError(`Memory file already exists: ${plan.path}`);
+        }
+        const file: ScopedMemoryFile = {
+          ...scope,
+          path: plan.path,
+          content: plan.content ?? "",
+          version: 1,
+          source: plan.source,
+          provenance: plan.provenance,
+          sourceRunId: plan.sourceRunId,
+          createdAt: plan.now,
+          updatedAt: plan.now,
+        };
+        state.memoryFiles.push(file);
+        return publicMemoryFile(file);
+      }
+
+      const sourcePath = plan.op === "rename" ? plan.fromPath : plan.path;
+      if (!sourcePath) throw new MemoryConflictError("rename plan is missing its source path");
+      const index = state.memoryFiles.findIndex(
+        (file) => memoryInScope(file, scope) && file.path === sourcePath,
+      );
+      if (index < 0) throw new MemoryConflictError(`Memory file does not exist: ${sourcePath}`);
+      const current = state.memoryFiles[index]!;
+      if (current.version !== plan.expectedVersion) {
+        throw new MemoryConflictError(
+          `Memory file ${sourcePath} changed (expected version ${plan.expectedVersion}, found ${current.version})`,
+        );
+      }
+
+      if (plan.op === "delete") {
+        state.memoryFiles.splice(index, 1);
+        return null;
+      }
+
+      if (plan.op === "rename") {
+        if (state.memoryFiles.some((file) => memoryInScope(file, scope) && file.path === plan.path)) {
+          throw new MemoryConflictError(`Memory file already exists: ${plan.path}`);
+        }
+        const renamed: ScopedMemoryFile = {
+          ...current,
+          path: plan.path,
+          version: current.version + 1,
+          source: plan.source,
+          provenance: plan.provenance,
+          sourceRunId: plan.sourceRunId,
+          updatedAt: plan.now,
+        };
+        state.memoryFiles[index] = renamed;
+        return publicMemoryFile(renamed);
+      }
+
+      const updated: ScopedMemoryFile = {
+        ...current,
+        content: plan.content ?? "",
+        version: current.version + 1,
+        source: plan.source,
+        provenance: plan.provenance,
+        sourceRunId: plan.sourceRunId,
+        updatedAt: plan.now,
+      };
+      state.memoryFiles[index] = updated;
+      return publicMemoryFile(updated);
+    });
+  }
+
+  private async deleteMemory(scope: MemoryScope, paths: string[]): Promise<number> {
+    if (paths.length === 0) return 0;
+    const targets = new Set(paths);
+    return this.commit((state) => {
+      const before = state.memoryFiles.length;
+      state.memoryFiles = state.memoryFiles.filter(
+        (file) => !(memoryInScope(file, scope) && targets.has(file.path)),
+      );
+      return before - state.memoryFiles.length;
+    });
+  }
+
   async listIntegrations(userId: string): Promise<Integration[]> {
     return (await this.load()).integrations.filter((item) => item.userId === userId).map(publicIntegration);
   }
@@ -508,6 +675,7 @@ export class FileStore implements AppStore {
         userId,
         toolCount: input.toolCount ?? 0,
         lastError: input.lastError ?? null,
+        allowedWriteTools: input.allowedWriteTools ?? [],
         createdAt: now(),
       };
       state.integrations.push(item);
@@ -573,12 +741,36 @@ export class FileStore implements AppStore {
 
   async createDesktopJob(input: NewDesktopJob): Promise<DesktopJob> {
     return this.commit((state) => {
+      const existing = state.desktopJobs.find(
+        (job) =>
+          job.userId === input.userId &&
+          ((input.id !== undefined && job.id === input.id) ||
+            (input.runId != null &&
+              input.stepKey != null &&
+              job.runId === input.runId &&
+              job.stepKey === input.stepKey)),
+      );
+      if (existing) return existing;
       const job: DesktopJob = {
-        ...input,
-        id: `desktop_job_${randomUUID()}`,
+        userId: input.userId,
+        deviceId: input.deviceId,
+        integrationId: input.integrationId,
+        toolName: input.toolName,
+        args: input.args,
+        id: input.id ?? `desktop_job_${randomUUID()}`,
+        runId: input.runId ?? null,
+        stepKey: input.stepKey ?? null,
+        attempt: input.attempt ?? null,
         status: "pending",
         output: null,
         error: null,
+        claimedBy: null,
+        claimedAt: null,
+        leaseExpiresAt: null,
+        deliveryStatus: "pending",
+        deliveryAttempts: 0,
+        deliveryError: null,
+        deliveredAt: null,
         createdAt: now(),
       };
       state.desktopJobs.push(job);
@@ -591,22 +783,67 @@ export class FileStore implements AppStore {
   }
 
   async listPendingDesktopJobs(userId: string, deviceId: string): Promise<DesktopJob[]> {
+    const at = Date.now();
     return (await this.load()).desktopJobs.filter(
-      (job) => job.userId === userId && job.deviceId === deviceId && job.status === "pending",
+      (job) =>
+        job.userId === userId &&
+        job.deviceId === deviceId &&
+        job.status === "pending" &&
+        (!job.claimedBy || (job.leaseExpiresAt != null && Date.parse(job.leaseExpiresAt) <= at)),
     );
+  }
+
+  async claimDesktopJob(input: ClaimDesktopJobInput): Promise<DesktopJob | null> {
+    return this.commit((state) => {
+      const job = state.desktopJobs.find((item) => item.userId === input.userId && item.id === input.jobId);
+      if (!job || job.status !== "pending" || job.deviceId !== input.deviceId) return null;
+      const at = input.now ?? now();
+      // A claimed job with no lease deadline is not stealable: only an active
+      // lease that has actually expired may transfer to another claim.
+      if (job.claimedBy) {
+        if (job.leaseExpiresAt == null) return null;
+        if (Date.parse(job.leaseExpiresAt) > Date.parse(at)) return null;
+      }
+      job.claimedBy = input.deviceId;
+      job.claimedAt = at;
+      job.leaseExpiresAt = new Date(Date.parse(at) + input.leaseMs).toISOString();
+      return job;
+    });
   }
 
   async completeDesktopJob(
     userId: string,
     jobId: string,
     result: { ok: boolean; output?: unknown; error?: string },
+    deviceId?: string,
   ): Promise<DesktopJob | null> {
     return this.commit((state) => {
       const job = state.desktopJobs.find((item) => item.userId === userId && item.id === jobId);
       if (!job || job.status !== "pending") return null;
+      if (deviceId && job.deviceId !== deviceId) return null;
+      if (deviceId && job.claimedBy && job.claimedBy !== deviceId) return null;
       job.status = result.ok ? "completed" : "failed";
       job.output = result.output ?? null;
       job.error = result.error ?? null;
+      job.claimedBy = null;
+      job.claimedAt = null;
+      job.leaseExpiresAt = null;
+      return job;
+    });
+  }
+
+  async markDesktopJobDelivery(
+    userId: string,
+    jobId: string,
+    delivery: DesktopJobDelivery,
+  ): Promise<DesktopJob | null> {
+    return this.commit((state) => {
+      const job = state.desktopJobs.find((item) => item.userId === userId && item.id === jobId);
+      if (!job) return null;
+      job.deliveryStatus = delivery.status;
+      job.deliveryAttempts += 1;
+      job.deliveryError = delivery.error ?? null;
+      if (delivery.status === "delivered") job.deliveredAt = now();
       return job;
     });
   }
@@ -619,6 +856,14 @@ export class FileStore implements AppStore {
         status: "pending",
         runId: input.runId ?? null,
         providerApprovalId: input.providerApprovalId ?? null,
+        toolName: input.toolName ?? null,
+        toolArgsRedacted: input.toolArgsRedacted ?? null,
+        toolRisk: input.toolRisk ?? "read",
+        idempotencyKey: input.idempotencyKey ?? null,
+        expiresAt: input.expiresAt ?? defaultApprovalExpiresAt(),
+        integrationId: input.integrationId ?? null,
+        integrationName: input.integrationName ?? null,
+        argsDigest: input.argsDigest ?? null,
         createdAt: now(),
       };
       state.pendingActions.push(action);
@@ -1380,6 +1625,34 @@ function claimApprovalRun(state: FileState, input: ClaimApprovalRunInput): Claim
   const run = action.runId ? state.runs.find((item) => item.id === action.runId) : undefined;
   if (!run) return { outcome: "approval_missing" };
 
+  const timestamp = input.now ?? now();
+  // Atomic expiry guard: a persisted pending run cannot resume an action whose
+  // deadline has passed. Legacy null deadlines remain resumable.
+  if (isPendingActionExpired(action, new Date(timestamp))) {
+    action.status = "expired";
+    if (run.status === "awaiting_approval") {
+      run.status = "expired";
+      run.fence += 1;
+      run.leaseOwner = null;
+      run.leaseExpiresAt = null;
+      run.updatedAt = timestamp;
+      if (conversation.activeRunId === run.id) {
+        conversation.activeRunId = null;
+        conversation.runStatus = "idle";
+        conversation.updatedAt = timestamp;
+      }
+      appendRunEvent(
+        state,
+        run.id,
+        "expired",
+        { reason: "approval_expired" },
+        `expired:${run.id}`,
+        timestamp,
+      );
+    }
+    return { outcome: "cancelled" };
+  }
+
   if (run.status !== "awaiting_approval") {
     return isActiveRunStatus(run.status)
       ? { outcome: "busy", run }
@@ -1387,7 +1660,6 @@ function claimApprovalRun(state: FileState, input: ClaimApprovalRunInput): Claim
   }
   if (conversation.activeRunId !== run.id) return { outcome: "cancelled" };
 
-  const timestamp = input.now ?? now();
   run.botId = conversation.botIds[0] ?? run.botId;
   run.actionId = action.id;
   if (input.decision === "approve") {

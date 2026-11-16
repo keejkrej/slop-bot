@@ -1,0 +1,19 @@
+{
+  "name": "scheduled empty report is quiet and has no invented usage",
+  "trigger": "scheduled",
+  "model": "test/model",
+  "prompt": "Report status",
+  "result": {
+    "text": "",
+    "content": [],
+    "responseMessages": [],
+    "totalUsage": {}
+  },
+  "expected": {
+    "decision": "silent",
+    "runStatus": "succeeded",
+    "messageCount": 0,
+    "traceTypes": ["trace.run.start", "trace.model.end", "trace.run.end"],
+    "usage": null
+  }
+}

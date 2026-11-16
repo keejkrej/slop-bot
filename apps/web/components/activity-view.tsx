@@ -3,10 +3,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowSquareOutIcon, ClockCounterClockwiseIcon } from "@phosphor-icons/react";
 import type { Bot, Conversation, RunStatus, RunTrigger } from "@slopbot/contracts";
-import { getActivity, type ActivityRun } from "@/lib/client/api";
+import {
+  getActivity,
+  getActivityRun,
+  type ActivityRun,
+  type ActivityRunDetail,
+} from "@/lib/client/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { TraceView } from "@/components/trace-view";
 
 const STATUS_LABEL: Record<RunStatus, string> = {
   queued: "Queued",
@@ -44,6 +50,10 @@ export function ActivityView({ bots, conversations, onBot }: {
   const [runs, setRuns] = useState<ActivityRun[]>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [expandedRunId, setExpandedRunId] = useState<string>();
+  const [details, setDetails] = useState<Record<string, ActivityRunDetail>>({});
+  const [detailLoading, setDetailLoading] = useState<string>();
+  const [detailError, setDetailError] = useState<string>();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -59,6 +69,25 @@ export function ActivityView({ bots, conversations, onBot }: {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  const toggleTrace = useCallback(async (runId: string) => {
+    if (expandedRunId === runId) {
+      setExpandedRunId(undefined);
+      return;
+    }
+    setExpandedRunId(runId);
+    if (details[runId]) return;
+    setDetailLoading(runId);
+    setDetailError(undefined);
+    try {
+      const detail = await getActivityRun(runId);
+      setDetails((current) => ({ ...current, [runId]: detail }));
+    } catch (cause) {
+      setDetailError(cause instanceof Error ? cause.message : "Could not load the run trace.");
+    } finally {
+      setDetailLoading(undefined);
+    }
+  }, [details, expandedRunId]);
 
   return (
     <main className="mx-auto max-w-4xl px-5 py-8 sm:px-8 lg:py-10">
@@ -80,6 +109,8 @@ export function ActivityView({ bots, conversations, onBot }: {
             const bot = bots.find((item) => item.id === run.botId);
             const conversation = conversations.find((item) => item.id === run.conversationId);
             const quiet = run.status === "succeeded" && run.trigger.kind === "scheduled" && run.outputMessageId === null;
+            const expanded = expandedRunId === run.id;
+            const detail = details[run.id];
             return (
               <article className="bg-muted/30 p-4" key={run.id}>
                 <div className="flex flex-wrap items-start gap-3">
@@ -94,15 +125,38 @@ export function ActivityView({ bots, conversations, onBot }: {
                     </div>
                     <p className="mt-1 truncate text-[10px] text-muted-foreground">{conversation?.title ?? "Conversation unavailable"} · {formatTimestamp(run.createdAt)}</p>
                   </div>
-                  {bot ? (
-                    <Button className="shrink-0" onClick={() => onBot(bot.id)} size="sm" variant="ghost">
-                      Open chat <ArrowSquareOutIcon />
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      aria-controls={`trace-${run.id}`}
+                      aria-expanded={expanded}
+                      onClick={() => void toggleTrace(run.id)}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      {expanded ? "Hide trace" : "Show trace"}
                     </Button>
-                  ) : null}
+                    {bot ? (
+                      <Button onClick={() => onBot(bot.id)} size="sm" variant="ghost">
+                        Open chat <ArrowSquareOutIcon />
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
 
                 {quiet ? <p className="mt-3 text-[10px] text-muted-foreground">Quiet run — no message was posted.</p> : null}
                 {run.error ? <p className="mt-3 line-clamp-3 text-destructive text-xs leading-5" role="alert">{run.error}</p> : null}
+
+                {expanded ? (
+                  <div className="mt-3 border-t border-border/60 pt-3" id={`trace-${run.id}`}>
+                    {detailLoading === run.id ? (
+                      <div className="grid min-h-12 place-items-center"><Spinner /></div>
+                    ) : detailError ? (
+                      <p className="text-destructive text-xs leading-5" role="alert">{detailError}</p>
+                    ) : detail ? (
+                      <TraceView traces={detail.traces} />
+                    ) : null}
+                  </div>
+                ) : null}
               </article>
             );
           })}

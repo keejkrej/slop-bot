@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { initSchema } from "../db/schema-init";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /**
@@ -20,8 +20,7 @@ describe.skipIf(!url)("PostgresStore run store (integration)", () => {
   beforeAll(async () => {
     const postgres = (await import("postgres")).default;
     sql = postgres(url!, { max: 1 });
-    const schema = await readFile(new URL("../db/schema.sql", import.meta.url), "utf8");
-    await sql.unsafe(schema);
+    await initSchema(sql);
     const { PostgresStore } = await import("../db/postgres-store");
     store = new PostgresStore(url!);
   });
@@ -152,7 +151,7 @@ describe.skipIf(!url)("PostgresStore run store (integration)", () => {
       conversationId: conv.id,
       botId: "bot_nova",
       kind: "tool_approval",
-      summary: "send_email",
+      summary: "memory_delete notes/example.md",
       modelMessages: [],
       runId: claim.run.id,
       providerApprovalId: "provider-approval-123",

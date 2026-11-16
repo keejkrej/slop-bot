@@ -1,0 +1,37 @@
+{
+  "name": "memory delete pauses for approval",
+  "trigger": "message",
+  "model": "test/model",
+  "result": {
+    "text": "",
+    "content": [
+      {
+        "type": "tool-approval-request",
+        "approvalId": "approval-1",
+        "toolCall": { "toolName": "memory_delete", "input": { "path": "notes/example.md" } }
+      }
+    ],
+    "responseMessages": [
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool-call",
+            "toolCallId": "call_1",
+            "toolName": "memory_delete",
+            "input": { "path": "notes/example.md" }
+          }
+        ]
+      }
+    ],
+    "totalUsage": { "inputTokens": 20, "outputTokens": 5, "totalTokens": 25 }
+  },
+  "expected": {
+    "decision": "approval",
+    "runStatus": "awaiting_approval",
+    "messageCount": 0,
+    "actionStatus": "pending",
+    "traceTypes": ["trace.run.start", "trace.model.end", "trace.approval.start"],
+    "usage": { "inputTokens": 20, "outputTokens": 5, "totalTokens": 25 }
+  }
+}

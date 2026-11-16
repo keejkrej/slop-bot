@@ -51,8 +51,11 @@ create table if not exists integrations (
   tool_count integer not null default 0,
   last_error text,
   secret_ciphertext text,
+  allowed_write_tools jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now()
 );
+-- Explicit finite per-tool write grants. Empty means no non-read MCP tools.
+alter table integrations add column if not exists allowed_write_tools jsonb not null default '[]'::jsonb;
 
 create table if not exists oauth_states (
   state text primary key,
@@ -73,8 +76,36 @@ create table if not exists pending_actions (
   summary text not null,
   model_messages jsonb not null,
   status text not null default 'pending',
+  tool_name text,
+  tool_args_redacted jsonb,
+  tool_risk text not null default 'read',
+  idempotency_key text,
+  expires_at timestamptz,
+  integration_id text,
+  integration_name text,
   created_at timestamptz not null default now()
 );
+
+-- Durable file-backed memory. Global user instructions use empty
+-- conversation_id/bot_id; conversation memory is bound to one bot in one
+-- conversation. version is the compare-and-swap revision.
+create table if not exists memory_files (
+  id text primary key,
+  user_id text not null,
+  conversation_id text not null default '',
+  bot_id text not null default '',
+  path text not null,
+  content text not null,
+  version integer not null default 1,
+  source text not null,
+  provenance text not null,
+  source_run_id text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists memory_files_scope_path_idx
+  on memory_files(user_id, conversation_id, bot_id, path);
+create index if not exists memory_files_user_idx on memory_files(user_id);
 
 create table if not exists desktop_jobs (
   id text primary key,
@@ -86,14 +117,56 @@ create table if not exists desktop_jobs (
   status text not null default 'pending',
   output jsonb,
   error text,
+  run_id text,
+  step_key text,
+  attempt integer,
+  claimed_by text,
+  claimed_at timestamptz,
+  lease_expires_at timestamptz,
+  delivery_status text not null default 'pending',
+  delivery_attempts integer not null default 0,
+  delivery_error text,
+  delivered_at timestamptz,
   created_at timestamptz not null default now()
 );
 create index if not exists desktop_jobs_pending_idx on desktop_jobs(user_id, device_id, status);
+-- Additive migration for databases created before desktop job idempotency.
+alter table desktop_jobs add column if not exists run_id text;
+alter table desktop_jobs add column if not exists step_key text;
+alter table desktop_jobs add column if not exists attempt integer;
+alter table desktop_jobs add column if not exists claimed_by text;
+alter table desktop_jobs add column if not exists claimed_at timestamptz;
+alter table desktop_jobs add column if not exists lease_expires_at timestamptz;
+alter table desktop_jobs add column if not exists delivery_status text not null default 'pending';
+alter table desktop_jobs add column if not exists delivery_attempts integer not null default 0;
+alter table desktop_jobs add column if not exists delivery_error text;
+alter table desktop_jobs add column if not exists delivered_at timestamptz;
+-- Desktop job idempotency is scoped per user: two users may legitimately use
+-- the same run/step identity. Drop only the legacy global index and replace it
+-- with a user-scoped partial unique index. No table or row is dropped.
+drop index if exists desktop_jobs_run_step_idx;
+create unique index if not exists desktop_jobs_user_run_step_idx
+  on desktop_jobs(user_id, run_id, step_key)
+  where run_id is not null and step_key is not null;
+create index if not exists desktop_jobs_lease_idx
+  on desktop_jobs(user_id, device_id, status, lease_expires_at);
 
 -- Durable per-conversation agent runs. Additive migration: existing databases
 -- gain the new columns/tables without rewriting prior rows.
 alter table pending_actions add column if not exists run_id text;
 alter table pending_actions add column if not exists provider_approval_id text;
+-- Generic tool-approval metadata. Additive and legacy-safe: old rows keep
+-- null tool fields and the safe `read` risk default.
+alter table pending_actions add column if not exists tool_name text;
+alter table pending_actions add column if not exists tool_args_redacted jsonb;
+alter table pending_actions add column if not exists tool_risk text not null default 'read';
+alter table pending_actions add column if not exists idempotency_key text;
+alter table pending_actions add column if not exists expires_at timestamptz;
+alter table pending_actions add column if not exists integration_id text;
+alter table pending_actions add column if not exists integration_name text;
+-- Canonical digest of the exact approved arguments. Nullable for legacy rows;
+-- gated writes fail closed when it is absent.
+alter table pending_actions add column if not exists args_digest text;
 
 create table if not exists runs (
   id text primary key,

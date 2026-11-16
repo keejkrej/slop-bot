@@ -62,11 +62,11 @@ describe("FileStore", () => {
       conversationId: "conv_1",
       botId: "bot_1",
       kind: "tool_approval",
-      summary: "send_email to owner@example.com",
+      summary: "memory_delete notes/example.md",
       modelMessages: [{ role: "user", content: "Send it" }],
     });
     expect(action.status).toBe("pending");
-    expect((await store.listPendingActions("demo-user", "conv_1"))[0]?.summary).toContain("owner@example.com");
+    expect((await store.listPendingActions("demo-user", "conv_1"))[0]?.summary).toContain("notes/example.md");
     await store.setPendingActionStatus("demo-user", action.id, "completed");
     expect(await store.listPendingActions("demo-user", "conv_1")).toHaveLength(0);
   });

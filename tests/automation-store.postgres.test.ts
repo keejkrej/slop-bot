@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { initSchema } from "../db/schema-init";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /**
@@ -17,8 +17,7 @@ describe.skipIf(!url)("PostgresStore automation store (integration)", () => {
   beforeAll(async () => {
     const postgres = (await import("postgres")).default;
     sql = postgres(url!, { max: 1 });
-    const schema = await readFile(new URL("../db/schema.sql", import.meta.url), "utf8");
-    await sql.unsafe(schema);
+    await initSchema(sql);
     const { PostgresStore } = await import("../db/postgres-store");
     store = new PostgresStore(url!);
     const conversation = await store.createConversation(userId, {
