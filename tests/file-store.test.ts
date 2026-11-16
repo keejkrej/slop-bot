@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,6 +14,15 @@ async function makeStore() {
   const directory = await mkdtemp(join(tmpdir(), "slop-store-"));
   directories.push(directory);
   return new FileStore(join(directory, "store.json"));
+}
+
+async function setMessageTimes(file: string, times: string[]) {
+  const state = JSON.parse(await readFile(file, "utf8")) as { messages: Array<{ createdAt: string }> };
+  state.messages.forEach((message, index) => {
+    const time = times[index];
+    if (time) message.createdAt = time;
+  });
+  await writeFile(file, JSON.stringify(state));
 }
 
 describe("FileStore", () => {
@@ -60,6 +69,50 @@ describe("FileStore", () => {
     expect((await store.listPendingActions("demo-user", "conv_1"))[0]?.summary).toContain("owner@example.com");
     await store.setPendingActionStatus("demo-user", action.id, "completed");
     expect(await store.listPendingActions("demo-user", "conv_1")).toHaveLength(0);
+  });
+
+  it("previews the latest bot reply per bot across conversations", async () => {
+    const store = await makeStore();
+    const file = join(directories[0]!, "store.json");
+    const bot = await store.createBot("demo-user", { name: "Test", handle: "test", persona: "A testing bot with clear answers.", model: "openai/test", integrationIds: [] });
+    const first = await store.createConversation("demo-user", { title: "First", botIds: [bot.id] });
+    const second = await store.createConversation("demo-user", { title: "Second", botIds: [bot.id] });
+    await store.addMessage("demo-user", { conversationId: first.id, senderType: "bot", senderId: bot.id, content: "Older reply" });
+    await store.addMessage("demo-user", { conversationId: second.id, senderType: "bot", senderId: bot.id, content: "Newest reply\nwith a second line" });
+    await setMessageTimes(file, ["2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z"]);
+
+    const previews = await new FileStore(file).listBotPreviews("demo-user");
+    expect(previews).toHaveLength(1);
+    expect(previews[0]).toMatchObject({ botId: bot.id, content: "Newest reply\nwith a second line" });
+  });
+
+  it("ignores newer user and system messages when previewing a bot", async () => {
+    const store = await makeStore();
+    const file = join(directories[0]!, "store.json");
+    const bot = await store.createBot("demo-user", { name: "Test", handle: "test", persona: "A testing bot with clear answers.", model: "openai/test", integrationIds: [] });
+    const conversation = await store.createConversation("demo-user", { title: "Test chat", botIds: [bot.id] });
+    await store.addMessage("demo-user", { conversationId: conversation.id, senderType: "bot", senderId: bot.id, content: "Bot reply" });
+    await store.addMessage("demo-user", { conversationId: conversation.id, senderType: "user", senderId: "demo-user", content: "Newer user message" });
+    await store.addMessage("demo-user", { conversationId: conversation.id, senderType: "system", senderId: "system", content: "Newer system message" });
+    await setMessageTimes(file, ["2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z", "2026-01-03T00:00:00.000Z"]);
+
+    const previews = await new FileStore(file).listBotPreviews("demo-user");
+    expect(previews).toHaveLength(1);
+    expect(previews[0]?.content).toBe("Bot reply");
+  });
+
+  it("isolates bot previews by user", async () => {
+    const store = await makeStore();
+    const mine = await store.createBot("demo-user", { name: "Mine", handle: "mine", persona: "A testing bot with clear answers.", model: "openai/test", integrationIds: [] });
+    const theirs = await store.createBot("other-user", { name: "Theirs", handle: "theirs", persona: "A testing bot with clear answers.", model: "openai/test", integrationIds: [] });
+    const myConversation = await store.createConversation("demo-user", { title: "Mine", botIds: [mine.id] });
+    const theirConversation = await store.createConversation("other-user", { title: "Theirs", botIds: [theirs.id] });
+    await store.addMessage("demo-user", { conversationId: myConversation.id, senderType: "bot", senderId: mine.id, content: "My reply" });
+    await store.addMessage("other-user", { conversationId: theirConversation.id, senderType: "bot", senderId: theirs.id, content: "Their reply" });
+
+    const previews = await store.listBotPreviews("demo-user");
+    expect(previews).toHaveLength(1);
+    expect(previews[0]).toMatchObject({ botId: mine.id, content: "My reply" });
   });
 
   it("expires OAuth state and completes a desktop job once", async () => {
