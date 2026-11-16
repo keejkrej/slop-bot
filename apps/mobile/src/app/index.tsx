@@ -47,9 +47,10 @@ export default function ChatsScreen() {
         {data.bots.map((bot) => {
           const conversation = data.conversations.find((item) => item.botIds.includes(bot.id));
           const running = conversation?.runStatus === 'running';
+          const unread = conversation ? data.unreadCounts?.[conversation.id] ?? 0 : 0;
           return (
             <Pressable
-              accessibilityLabel={`Chat with ${bot.name}`}
+              accessibilityLabel={unread > 0 ? `Chat with ${bot.name}, ${unread} unread` : `Chat with ${bot.name}`}
               className="flex-row items-center py-4 active:bg-muted"
               disabled={Boolean(opening)}
               style={{ gap: 12, opacity: opening && opening !== bot.id ? 0.5 : 1 }}
@@ -63,6 +64,14 @@ export default function ChatsScreen() {
                   @{bot.handle}{running ? ' · thinking…' : ''}
                 </Text>
               </View>
+              {unread > 0 ? (
+                <Text
+                  accessibilityLabel={`${unread} unread`}
+                  className="shrink-0 rounded-full bg-foreground px-2 py-0.5 text-[10px] font-medium text-background"
+                >
+                  {unread > 99 ? '99+' : unread}
+                </Text>
+              ) : null}
               <ChevronRight className="shrink-0 text-muted-foreground" size={16} />
             </Pressable>
           );

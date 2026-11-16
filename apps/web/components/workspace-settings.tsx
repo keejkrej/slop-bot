@@ -1,16 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { PlugsConnectedIcon, RobotIcon, SlidersHorizontalIcon } from "@phosphor-icons/react";
+import { ClockCounterClockwiseIcon, LightningIcon, PlugsConnectedIcon, RobotIcon, SlidersHorizontalIcon } from "@phosphor-icons/react";
 import type { Bootstrap } from "@slopbot/contracts";
+import { ActivityView } from "./activity-view";
+import { AutomationsView } from "./automations-view";
 import { BotsView } from "./bots-view";
 import { ConnectionsView } from "./connections-view";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
-export type SettingsTab = "general" | "bots" | "connectors";
+export type SettingsTab = "general" | "bots" | "connectors" | "automations" | "activity";
 
-export function WorkspaceSettings({ open, onOpenChange, data, tab, onTabChange, onCreateBot, onAddConnection, onRefresh, onSignOut }: {
+export function WorkspaceSettings({ open, onOpenChange, data, tab, onTabChange, onCreateBot, onAddConnection, onRefresh, onSignOut, onBot }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   data: Bootstrap;
@@ -20,6 +22,7 @@ export function WorkspaceSettings({ open, onOpenChange, data, tab, onTabChange, 
   onAddConnection: () => void;
   onRefresh: () => Promise<void>;
   onSignOut?: () => void;
+  onBot?: (botId: string) => void;
 }) {
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -29,12 +32,18 @@ export function WorkspaceSettings({ open, onOpenChange, data, tab, onTabChange, 
           <SettingsTabButton active={tab === "general"} icon={<SlidersHorizontalIcon />} label="General" onClick={() => onTabChange("general")} />
           <SettingsTabButton active={tab === "bots"} icon={<RobotIcon />} label="Bots" onClick={() => onTabChange("bots")} />
           <SettingsTabButton active={tab === "connectors"} icon={<PlugsConnectedIcon />} label="Connectors" onClick={() => onTabChange("connectors")} />
+          <SettingsTabButton active={tab === "automations"} icon={<LightningIcon />} label="Automations" onClick={() => onTabChange("automations")} />
+          <SettingsTabButton active={tab === "activity"} icon={<ClockCounterClockwiseIcon />} label="Activity" onClick={() => onTabChange("activity")} />
         </aside>
         <section className="scrollbar-thin min-h-0 overflow-y-auto">
           {tab === "general" ? <GeneralSettings data={data} onSignOut={onSignOut} /> : tab === "bots" ? (
             <BotsView bots={data.bots} integrations={data.integrations} onCreate={onCreateBot} />
-          ) : (
+          ) : tab === "connectors" ? (
             <ConnectionsView integrations={data.integrations} onAdd={onAddConnection} onRefresh={onRefresh} />
+          ) : tab === "automations" ? (
+            <AutomationsView bots={data.bots} onRefresh={onRefresh} />
+          ) : (
+            <ActivityView bots={data.bots} conversations={data.conversations} onBot={onBot ?? (() => undefined)} />
           )}
         </section>
       </DialogContent>

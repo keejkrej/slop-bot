@@ -8,25 +8,84 @@ import {
   type BotPreview,
   type ChatMessage,
   type Conversation,
+  type ConversationReadState,
   type CreateBotInput,
   type CreateConversationInput,
   type Integration,
+  type Run,
+  type RunEvent,
+  type RunTimer,
+  type RunTrigger,
   type User,
 } from "@slopbot/contracts";
 import { decryptSecret, encryptSecret } from "./crypto";
-import type { AppStore, DesktopJob, NewDesktopJob, NewIntegration, NewMessage, NewPendingAction, OAuthState, PendingAction } from "./types";
+import {
+  conversationProjectionFor,
+  isActiveRunStatus,
+  START_HANDOFF_MS,
+  type AdmitAutomationOccurrenceInput,
+  type AppStore,
+  type AutomationOccurrence,
+  type AutomationOccurrencePatch,
+  type AutomationStore,
+  type AutomationTask,
+  type AutomationTaskPatch,
+  type ClaimApprovalRunInput,
+  type ClaimDueAutomationTasksInput,
+  type ClaimMessageRunInput,
+  type ClaimRunInput,
+  type ClaimRunResult,
+  type ClaimScheduledRunInput,
+  type CompleteAutomationOccurrenceInput,
+  type CompleteRunWithMessageInput,
+  type CompleteRunWithMessageResult,
+  type DesktopJob,
+  type NewAutomationTask,
+  type NewDesktopJob,
+  type NewIntegration,
+  type NewMessage,
+  type NewPendingAction,
+  type OAuthState,
+  type PendingAction,
+  type ListRecoverableRunsInput,
+  type ReadStateStore,
+  type ReleaseRunTimerInput,
+  type RunStore,
+  type TransitionRunInput,
+  type TransitionRunResult,
+  StoreDomainError,
+} from "./types";
 import type { IntegrationSecret } from "../apps/web/lib/server/mcp";
+
+type RunClaim = {
+  userId: string;
+  idempotencyKey: string;
+  runId: string;
+  createdAt: string;
+};
+
+type ConversationRead = ConversationReadState & { userId: string };
 
 type FileState = {
   bots: Array<Bot & { userId: string }>;
   conversations: Array<Conversation & { userId: string }>;
   messages: Array<ChatMessage & { userId: string }>;
+  readStates: ConversationRead[];
   integrations: Array<Integration & { userId: string }>;
   secrets: Record<string, string>;
   oauthStates: OAuthState[];
   desktopJobs: DesktopJob[];
   pendingActions: PendingAction[];
+  runs: Run[];
+  runEvents: RunEvent[];
+  runTimers: RunTimer[];
+  runClaims: RunClaim[];
+  automationTasks: AutomationTask[];
+  automationOccurrences: AutomationOccurrence[];
 };
+
+/** A tick lease older than this may be reclaimed after a crashed tick. */
+const AUTOMATION_CLAIM_LEASE_MS = 5 * 60 * 1000;
 
 const now = () => new Date().toISOString();
 const publicBot = ({ userId: _userId, ...bot }: Bot & { userId: string }): Bot => bot;
@@ -38,6 +97,44 @@ export class FileStore implements AppStore {
   private state: FileState | undefined;
   private writeChain: Promise<unknown> = Promise.resolve();
 
+  readonly runs: RunStore = {
+    claimRun: (input) => this.claimRun(input),
+    getRun: (userId, runId) => this.getRun(userId, runId),
+    listRuns: (input) => this.listRuns(input),
+    transitionRun: (input) => this.transitionRun(input),
+    completeWithMessage: (input) => this.completeWithMessage(input),
+    appendEvent: (input) => this.appendEvent(input),
+    listEvents: (userId, runId) => this.listEvents(userId, runId),
+    upsertTimer: (input) => this.upsertTimer(input),
+    claimDueTimers: (input) => this.claimDueTimers(input),
+    releaseRunTimer: (input) => this.releaseRunTimer(input),
+    listRecoverableRuns: (input) => this.listRecoverableRuns(input),
+  };
+
+  readonly automations: AutomationStore = {
+    createTask: (input) => this.createAutomationTask(input),
+    listTasks: (userId) => this.listAutomationTasks(userId),
+    getTask: (userId, taskId) => this.getAutomationTask(userId, taskId),
+    updateTask: (userId, taskId, patch, expectedRevision) =>
+      this.updateAutomationTask(userId, taskId, patch, expectedRevision),
+    deleteTask: (userId, taskId) => this.deleteAutomationTask(userId, taskId),
+    claimDueTasks: (input) => this.claimDueAutomationTasks(input),
+    admitOccurrence: (input) => this.admitAutomationOccurrence(input),
+    completeOccurrence: (input) => this.completeAutomationOccurrence(input),
+    updateOccurrence: (userId, occurrenceId, patch) =>
+      this.updateAutomationOccurrence(userId, occurrenceId, patch),
+    listOccurrences: (userId, taskId) => this.listAutomationOccurrences(userId, taskId),
+    listOpenOccurrences: (limit) => this.listOpenAutomationOccurrences(limit),
+    listPendingOccurrences: (limit) => this.listPendingAutomationOccurrences(limit),
+    listOpenOccurrencesForTask: (userId, taskId) =>
+      this.listOpenAutomationOccurrencesForTask(userId, taskId),
+  };
+
+  readonly readState: ReadStateStore = {
+    markRead: (userId, conversationId, messageId) => this.markRead(userId, conversationId, messageId),
+    getUnreadCounts: (userId) => this.getUnreadCounts(userId),
+  };
+
   constructor(private readonly file = resolve(process.cwd(), ".data", "store.json")) {}
 
   private async load(): Promise<FileState> {
@@ -46,6 +143,46 @@ export class FileStore implements AppStore {
       this.state = JSON.parse(await readFile(this.file, "utf8")) as FileState;
       this.state.desktopJobs ??= [];
       this.state.pendingActions ??= [];
+      this.state.readStates ??= [];
+      this.state.runs ??= [];
+      this.state.runEvents ??= [];
+      this.state.runTimers ??= [];
+      this.state.runClaims ??= [];
+      this.state.automationTasks ??= [];
+      this.state.automationOccurrences ??= [];
+      this.state.automationTasks = this.state.automationTasks.map((task) => ({
+        ...task,
+        status: task.status ?? "active",
+        nextDueAt: task.nextDueAt ?? null,
+        lastOccurredAt: task.lastOccurredAt ?? null,
+        lastError: task.lastError ?? null,
+        attempts: task.attempts ?? 0,
+        claimedAt: task.claimedAt ?? null,
+        revision: task.revision ?? 0,
+      }));
+      this.state.automationOccurrences = this.state.automationOccurrences.map((occurrence) => ({
+        ...occurrence,
+        runId: occurrence.runId ?? null,
+        workflowRunId: occurrence.workflowRunId ?? null,
+        error: occurrence.error ?? null,
+      }));
+      this.state.runs = this.state.runs.map((run) => ({
+        ...run,
+        botId: run.botId ?? "",
+        workflowRunId: run.workflowRunId ?? null,
+        outputMessageId: run.outputMessageId ?? null,
+        leaseOwner: run.leaseOwner ?? null,
+        leaseExpiresAt: run.leaseExpiresAt ?? null,
+      }));
+      this.state.pendingActions = this.state.pendingActions.map((action) => ({
+        ...action,
+        runId: action.runId ?? null,
+        providerApprovalId: action.providerApprovalId ?? null,
+      }));
+      this.state.messages = this.state.messages.map((message) => ({
+        ...message,
+        runId: message.runId ?? null,
+      }));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const createdAt = now();
@@ -97,30 +234,39 @@ export class FileStore implements AppStore {
           },
         ],
         messages: [],
+        readStates: [],
         integrations: [],
         secrets: {},
         oauthStates: [],
         desktopJobs: [],
         pendingActions: [],
+        runs: [],
+        runEvents: [],
+        runTimers: [],
+        runClaims: [],
+        automationTasks: [],
+        automationOccurrences: [],
       };
-      await this.persist();
+      await this.persistState(this.state);
     }
     return this.state;
   }
 
-  private async persist(): Promise<void> {
-    if (!this.state) return;
+  private async persistState(state: FileState): Promise<void> {
     await mkdir(dirname(this.file), { recursive: true });
     const temporary = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(temporary, JSON.stringify(this.state, null, 2), { mode: 0o600 });
+    await writeFile(temporary, JSON.stringify(state, null, 2), { mode: 0o600 });
     await rename(temporary, this.file);
   }
 
   private async commit<T>(operation: (state: FileState) => T | Promise<T>): Promise<T> {
     const result = this.writeChain.then(async () => {
-      const state = await this.load();
-      const value = await operation(state);
-      await this.persist();
+      const current = await this.load();
+      // Copy-on-write: a failed persist must never mutate the live in-memory state.
+      const draft = structuredClone(current);
+      const value = await operation(draft);
+      await this.persistState(draft);
+      this.state = draft;
       return value;
     });
     this.writeChain = result.catch(() => undefined);
@@ -244,12 +390,103 @@ export class FileStore implements AppStore {
         userId,
         status: input.status ?? "complete",
         error: input.error ?? null,
+        runId: null,
         createdAt: now(),
       };
       state.messages.push(message);
       conversation.updatedAt = message.createdAt;
       return publicMessage(message);
     });
+  }
+
+  async markRead(
+    userId: string,
+    conversationId: string,
+    messageId?: string | null,
+  ): Promise<ConversationReadState | null> {
+    return this.commit((state) => {
+      const conversation = state.conversations.find(
+        (item) => item.userId === userId && item.id === conversationId,
+      );
+      if (!conversation) return null;
+
+      let targetAt: string;
+      let targetId: string | null;
+      if (messageId) {
+        const message = state.messages.find(
+          (item) =>
+            item.userId === userId &&
+            item.conversationId === conversationId &&
+            item.id === messageId,
+        );
+        if (!message) throw new Error("Message not found.");
+        targetAt = message.createdAt;
+        targetId = message.id;
+      } else {
+        // No explicit message: mark the whole conversation read at its newest
+        // message (any sender), or now when it has no messages yet.
+        const newest = state.messages
+          .filter((item) => item.userId === userId && item.conversationId === conversationId)
+          .sort((a, b) => compareReadPosition(b.createdAt, b.id, a.createdAt, a.id))[0];
+        targetAt = newest?.createdAt ?? now();
+        targetId = newest?.id ?? null;
+      }
+
+      const existing = state.readStates.find(
+        (item) => item.userId === userId && item.conversationId === conversationId,
+      );
+      if (existing) {
+        // Forward-only in the same (createdAt, id) order used for unread counts,
+        // so an equal-timestamp message can never move the bookmark backwards.
+        const forward =
+          compareReadPosition(targetAt, targetId, existing.lastReadAt, existing.lastReadMessageId) > 0;
+        if (!forward) {
+          return {
+            conversationId,
+            lastReadAt: existing.lastReadAt,
+            lastReadMessageId: existing.lastReadMessageId,
+          };
+        }
+        existing.lastReadAt = targetAt;
+        existing.lastReadMessageId = targetId;
+        return {
+          conversationId,
+          lastReadAt: existing.lastReadAt,
+          lastReadMessageId: existing.lastReadMessageId,
+        };
+      }
+
+      state.readStates.push({ userId, conversationId, lastReadAt: targetAt, lastReadMessageId: targetId });
+      return { conversationId, lastReadAt: targetAt, lastReadMessageId: targetId };
+    });
+  }
+
+  async getUnreadCounts(userId: string): Promise<Record<string, number>> {
+    const state = await this.load();
+    const owned = new Set(
+      state.conversations.filter((item) => item.userId === userId).map((item) => item.id),
+    );
+    const reads = new Map(
+      state.readStates
+        .filter((item) => item.userId === userId)
+        .map((item) => [item.conversationId, item]),
+    );
+    const counts: Record<string, number> = {};
+    for (const message of state.messages) {
+      if (message.userId !== userId || message.senderType !== "bot") continue;
+      if (!owned.has(message.conversationId)) continue;
+      const read = reads.get(message.conversationId);
+      const unread =
+        !read ||
+        compareReadPosition(
+          message.createdAt,
+          message.id,
+          read.lastReadAt,
+          read.lastReadMessageId,
+        ) > 0;
+      if (unread) counts[message.conversationId] = (counts[message.conversationId] ?? 0) + 1;
+    }
+    return counts;
   }
 
   async listIntegrations(userId: string): Promise<Integration[]> {
@@ -380,6 +617,8 @@ export class FileStore implements AppStore {
         ...input,
         id: `approval_${randomUUID()}`,
         status: "pending",
+        runId: input.runId ?? null,
+        providerApprovalId: input.providerApprovalId ?? null,
         createdAt: now(),
       };
       state.pendingActions.push(action);
@@ -414,4 +653,872 @@ export class FileStore implements AppStore {
       if (action) action.status = status;
     });
   }
+
+  private async createAutomationTask(input: NewAutomationTask): Promise<AutomationTask> {
+    return this.commit((state) => {
+      const timestamp = now();
+      const task: AutomationTask = {
+        ...input,
+        id: `auto_${randomUUID()}`,
+        status: input.status ?? "active",
+        lastOccurredAt: null,
+        lastError: null,
+        attempts: 0,
+        claimedAt: null,
+        revision: 0,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      state.automationTasks.push(task);
+      return task;
+    });
+  }
+
+  private async listAutomationTasks(userId: string): Promise<AutomationTask[]> {
+    return (await this.load()).automationTasks
+      .filter((task) => task.userId === userId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  private async getAutomationTask(userId: string, taskId: string): Promise<AutomationTask | null> {
+    return (
+      (await this.load()).automationTasks.find(
+        (task) => task.userId === userId && task.id === taskId,
+      ) ?? null
+    );
+  }
+
+  private async updateAutomationTask(
+    userId: string,
+    taskId: string,
+    patch: AutomationTaskPatch,
+    expectedRevision?: number,
+  ): Promise<AutomationTask | null> {
+    return this.commit((state) => {
+      const task = state.automationTasks.find(
+        (item) => item.userId === userId && item.id === taskId,
+      );
+      if (!task) return null;
+      if (expectedRevision !== undefined && task.revision !== expectedRevision) return null;
+      Object.assign(task, patch);
+      task.revision += 1;
+      task.updatedAt = now();
+      return task;
+    });
+  }
+
+  private async deleteAutomationTask(userId: string, taskId: string): Promise<void> {
+    await this.commit((state) => {
+      state.automationTasks = state.automationTasks.filter(
+        (task) => !(task.userId === userId && task.id === taskId),
+      );
+      state.automationOccurrences = state.automationOccurrences.filter(
+        (occurrence) => !(occurrence.userId === userId && occurrence.taskId === taskId),
+      );
+    });
+  }
+
+  private async claimDueAutomationTasks(
+    input: ClaimDueAutomationTasksInput,
+  ): Promise<AutomationTask[]> {
+    return this.commit((state) => {
+      const at = input.now;
+      const limit = input.limit ?? 25;
+      const leaseCutoff = new Date(
+        Date.parse(at) - AUTOMATION_CLAIM_LEASE_MS,
+      ).toISOString();
+      const due = state.automationTasks
+        .filter(
+          (task) =>
+            task.status === "active" &&
+            task.nextDueAt !== null &&
+            task.nextDueAt <= at &&
+            (task.claimedAt === null || task.claimedAt < leaseCutoff),
+        )
+        .sort((a, b) => (a.nextDueAt ?? "").localeCompare(b.nextDueAt ?? ""))
+        .slice(0, limit);
+      for (const task of due) {
+        task.claimedAt = at;
+        task.revision += 1;
+        task.updatedAt = at;
+      }
+      return due.map((task) => ({ ...task }));
+    });
+  }
+
+  private async admitAutomationOccurrence(
+    input: AdmitAutomationOccurrenceInput,
+  ): Promise<{ occurrence: AutomationOccurrence; created: boolean }> {
+    return this.commit((state) => {
+      const existing = state.automationOccurrences.find(
+        (occurrence) => occurrence.executionId === input.executionId,
+      );
+      if (existing) return { occurrence: existing, created: false };
+
+      const occurrence: AutomationOccurrence = {
+        id: `occ_${randomUUID()}`,
+        taskId: input.taskId,
+        userId: input.userId,
+        occurrenceAt: input.occurrenceAt,
+        executionId: input.executionId,
+        runId: null,
+        workflowRunId: null,
+        status: "queued",
+        error: null,
+        createdAt: input.now,
+        updatedAt: input.now,
+      };
+      state.automationOccurrences.push(occurrence);
+      return { occurrence, created: true };
+    });
+  }
+
+  private async completeAutomationOccurrence(
+    input: CompleteAutomationOccurrenceInput,
+  ): Promise<AutomationOccurrence | null> {
+    return this.commit((state) => {
+      const occurrence = state.automationOccurrences.find(
+        (item) => item.userId === input.userId && item.id === input.occurrenceId,
+      );
+      if (!occurrence) return null;
+
+      occurrence.status = input.occurrenceStatus;
+      if (input.runId !== undefined) occurrence.runId = input.runId;
+      if (input.workflowRunId !== undefined) occurrence.workflowRunId = input.workflowRunId;
+      if (input.error !== undefined) occurrence.error = input.error;
+      occurrence.updatedAt = input.now;
+
+      const task = state.automationTasks.find(
+        (item) => item.userId === input.userId && item.id === input.taskId,
+      );
+      if (task) {
+        const revisionMatches =
+          input.expectedRevision === undefined || task.revision === input.expectedRevision;
+        if (revisionMatches) {
+          if (input.taskStatus !== undefined) task.status = input.taskStatus;
+          if (input.nextDueAt !== undefined) task.nextDueAt = input.nextDueAt;
+          if (input.lastOccurredAt !== undefined) task.lastOccurredAt = input.lastOccurredAt;
+          if (input.lastError !== undefined) task.lastError = input.lastError;
+          if (input.attempts !== undefined) task.attempts = input.attempts;
+          task.claimedAt = null;
+          task.revision += 1;
+          task.updatedAt = input.now;
+        }
+      }
+      return occurrence;
+    });
+  }
+
+  private async updateAutomationOccurrence(
+    userId: string,
+    occurrenceId: string,
+    patch: AutomationOccurrencePatch,
+  ): Promise<AutomationOccurrence | null> {
+    return this.commit((state) => {
+      const occurrence = state.automationOccurrences.find(
+        (item) => item.userId === userId && item.id === occurrenceId,
+      );
+      if (!occurrence) return null;
+      Object.assign(occurrence, patch);
+      occurrence.updatedAt = now();
+      return occurrence;
+    });
+  }
+
+  private async listAutomationOccurrences(
+    userId: string,
+    taskId: string,
+  ): Promise<AutomationOccurrence[]> {
+    return (await this.load()).automationOccurrences
+      .filter((occurrence) => occurrence.userId === userId && occurrence.taskId === taskId)
+      .sort((a, b) => b.occurrenceAt.localeCompare(a.occurrenceAt));
+  }
+
+  private async listOpenAutomationOccurrences(limit = 50): Promise<AutomationOccurrence[]> {
+    return (await this.load()).automationOccurrences
+      .filter(
+        (occurrence) =>
+          occurrence.runId !== null &&
+          (occurrence.status === "queued" ||
+            occurrence.status === "running" ||
+            occurrence.status === "awaiting_approval"),
+      )
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
+      .slice(0, limit);
+  }
+
+  private async listPendingAutomationOccurrences(limit = 50): Promise<AutomationOccurrence[]> {
+    return (await this.load()).automationOccurrences
+      .filter((occurrence) => occurrence.status === "queued" && occurrence.runId === null)
+      .sort((a, b) => a.occurrenceAt.localeCompare(b.occurrenceAt))
+      .slice(0, limit);
+  }
+
+  private async listOpenAutomationOccurrencesForTask(
+    userId: string,
+    taskId: string,
+  ): Promise<AutomationOccurrence[]> {
+    return (await this.load()).automationOccurrences
+      .filter(
+        (occurrence) =>
+          occurrence.userId === userId &&
+          occurrence.taskId === taskId &&
+          (occurrence.status === "queued" ||
+            occurrence.status === "running" ||
+            occurrence.status === "awaiting_approval"),
+      )
+      .sort((a, b) => a.occurrenceAt.localeCompare(b.occurrenceAt));
+  }
+
+  private async claimRun(input: ClaimRunInput): Promise<ClaimRunResult> {
+    return this.commit((state) => {
+      if (input.kind === "message") return claimMessageRun(state, input);
+      if (input.kind === "approval") return claimApprovalRun(state, input);
+      return claimScheduledRun(state, input);
+    });
+  }
+
+  private async getRun(userId: string, runId: string): Promise<Run | null> {
+    return (await this.load()).runs.find((run) => run.userId === userId && run.id === runId) ?? null;
+  }
+
+  private async listRuns(input: {
+    userId: string;
+    conversationId?: string;
+    statuses?: Run["status"][];
+    createdBefore?: string;
+    limit?: number;
+  }): Promise<Run[]> {
+    const limit = input.limit ?? 50;
+    return (await this.load()).runs
+      .filter((run) => run.userId === input.userId)
+      .filter((run) => !input.conversationId || run.conversationId === input.conversationId)
+      .filter((run) => !input.statuses || input.statuses.includes(run.status))
+      .filter((run) => !input.createdBefore || run.createdAt < input.createdBefore)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit);
+  }
+
+  private async transitionRun(input: TransitionRunInput): Promise<TransitionRunResult> {
+    return this.commit<TransitionRunResult>((state) => {
+      const run = state.runs.find((item) => item.userId === input.userId && item.id === input.runId);
+      if (!run) return { outcome: "stale" };
+      if (run.status !== input.expectedStatus || run.fence !== input.expectedFence) {
+        return { outcome: "stale" };
+      }
+
+      const timestamp = now();
+      run.status = input.status;
+      run.fence += 1;
+      if (input.error !== undefined) run.error = input.error;
+      if (input.botId !== undefined) run.botId = input.botId;
+      if (input.workflowRunId !== undefined) run.workflowRunId = input.workflowRunId;
+      if (input.outputMessageId !== undefined) run.outputMessageId = input.outputMessageId;
+      if (input.leaseOwner !== undefined) run.leaseOwner = input.leaseOwner;
+      if (input.leaseExpiresAt !== undefined) run.leaseExpiresAt = input.leaseExpiresAt;
+      run.updatedAt = timestamp;
+
+      const conversation = state.conversations.find(
+        (item) => item.userId === input.userId && item.id === run.conversationId,
+      );
+      if (conversation && conversation.activeRunId === run.id) {
+        const projection = conversationProjectionFor(input.status);
+        conversation.runStatus = projection.runStatus;
+        conversation.activeRunId = projection.active ? run.id : null;
+        conversation.updatedAt = timestamp;
+      }
+
+      if (input.action) {
+        const actionUpdate = input.action;
+        const action = state.pendingActions.find(
+          (item) => item.userId === input.userId && item.id === actionUpdate.id,
+        );
+        if (action) action.status = actionUpdate.status;
+      }
+
+      if (input.timers) {
+        for (const patch of input.timers) {
+          const timer = state.runTimers.find(
+            (item) => item.runId === run.id && item.kind === patch.kind,
+          );
+          if (timer) timer.status = patch.status;
+        }
+      }
+
+      const event = input.event
+        ? appendRunEvent(state, run.id, input.event.type, input.event.data ?? null, input.event.dedupeKey ?? null, timestamp)
+        : null;
+
+      return { outcome: "applied", run, event };
+    });
+  }
+
+  private async completeWithMessage(
+    input: CompleteRunWithMessageInput,
+  ): Promise<CompleteRunWithMessageResult> {
+    return this.commit<CompleteRunWithMessageResult>((state) => {
+      const run = state.runs.find((item) => item.userId === input.userId && item.id === input.runId);
+      if (!run) return { outcome: "stale" };
+
+      if (run.status === "succeeded" && run.outputMessageId) {
+        const existing = state.messages.find((item) => item.id === run.outputMessageId);
+        if (existing) return { outcome: "idempotent", run, message: publicMessage(existing) };
+      }
+      if (run.status !== input.expectedStatus || run.fence !== input.expectedFence) {
+        return { outcome: "stale" };
+      }
+
+      // Reuse an already-persisted bot output for this run (for example after
+      // a crash in an older non-atomic path) instead of inserting a duplicate.
+      let message = state.messages.find(
+        (item) => item.runId === run.id && item.senderType === "bot",
+      );
+      if (!message) {
+        message = {
+          id: `msg_${randomUUID()}`,
+          userId: input.userId,
+          conversationId: run.conversationId,
+          senderType: "bot",
+          senderId: run.botId,
+          content: input.content,
+          status: "complete",
+          error: null,
+          runId: run.id,
+          createdAt: now(),
+        };
+        state.messages.push(message);
+      }
+
+      const timestamp = now();
+      run.status = "succeeded";
+      run.fence += 1;
+      run.outputMessageId = message.id;
+      run.leaseOwner = null;
+      run.leaseExpiresAt = null;
+      run.updatedAt = timestamp;
+
+      const conversation = state.conversations.find(
+        (item) => item.userId === input.userId && item.id === run.conversationId,
+      );
+      if (conversation) {
+        if (conversation.activeRunId === run.id) {
+          const projection = conversationProjectionFor("succeeded");
+          conversation.runStatus = projection.runStatus;
+          conversation.activeRunId = projection.active ? run.id : null;
+        }
+        conversation.updatedAt = timestamp;
+      }
+
+      if (input.action) {
+        const actionUpdate = input.action;
+        const action = state.pendingActions.find(
+          (item) => item.userId === input.userId && item.id === actionUpdate.id,
+        );
+        if (action) action.status = actionUpdate.status;
+      }
+
+      if (input.timers) {
+        for (const patch of input.timers) {
+          const timer = state.runTimers.find(
+            (item) => item.runId === run.id && item.kind === patch.kind,
+          );
+          if (timer) timer.status = patch.status;
+        }
+      }
+
+      const event = input.event
+        ? appendRunEvent(
+            state,
+            run.id,
+            input.event.type,
+            eventDataWithMessageId(input.event.data, message.id),
+            input.event.dedupeKey ?? null,
+            timestamp,
+          )
+        : null;
+
+      return { outcome: "applied", run, message: publicMessage(message), event };
+    });
+  }
+
+  private async appendEvent(input: {
+    userId: string;
+    runId: string;
+    type: string;
+    data?: unknown;
+    dedupeKey?: string;
+  }): Promise<RunEvent> {
+    return this.commit((state) => {
+      const run = state.runs.find((item) => item.userId === input.userId && item.id === input.runId);
+      if (!run) throw new Error("Run not found.");
+      return appendRunEvent(state, input.runId, input.type, input.data ?? null, input.dedupeKey ?? null, now());
+    });
+  }
+
+  private async listEvents(userId: string, runId: string): Promise<RunEvent[]> {
+    const state = await this.load();
+    const run = state.runs.find((item) => item.userId === userId && item.id === runId);
+    if (!run) return [];
+    return state.runEvents
+      .filter((event) => event.runId === runId)
+      .sort((a, b) => a.seq - b.seq);
+  }
+
+  private async upsertTimer(input: {
+    userId: string;
+    runId: string;
+    kind: string;
+    dueAt: string;
+  }): Promise<RunTimer> {
+    return this.commit((state) => {
+      const run = state.runs.find((item) => item.userId === input.userId && item.id === input.runId);
+      if (!run) throw new Error("Run not found.");
+      const existing = state.runTimers.find(
+        (timer) => timer.runId === input.runId && timer.kind === input.kind,
+      );
+      if (existing) {
+        existing.dueAt = input.dueAt;
+        existing.status = "pending";
+        existing.claimedAt = null;
+        return existing;
+      }
+      const timer: RunTimer = {
+        id: `timer_${randomUUID()}`,
+        userId: input.userId,
+        runId: input.runId,
+        kind: input.kind,
+        dueAt: input.dueAt,
+        status: "pending",
+        claimedAt: null,
+        createdAt: now(),
+      };
+      state.runTimers.push(timer);
+      return timer;
+    });
+  }
+
+  private async claimDueTimers(input: { now?: string; limit?: number } = {}): Promise<RunTimer[]> {
+    return this.commit((state) => {
+      const at = input.now ?? now();
+      const limit = input.limit ?? 50;
+      const due = state.runTimers
+        .filter((timer) => timer.status === "pending" && timer.dueAt <= at)
+        .sort((a, b) => a.dueAt.localeCompare(b.dueAt))
+        .slice(0, limit);
+      const claimed: RunTimer[] = [];
+      for (const timer of due) {
+        const run = state.runs.find((item) => item.id === timer.runId);
+        if (run && isActiveRunStatus(run.status)) {
+          timer.status = "claimed";
+          timer.claimedAt = at;
+          claimed.push(timer);
+        } else {
+          // Never let a stale lease/approval timer resurrect a terminal run.
+          timer.status = "cancelled";
+          timer.claimedAt = at;
+        }
+      }
+      return claimed;
+    });
+  }
+
+  private async releaseRunTimer(input: ReleaseRunTimerInput): Promise<void> {
+    await this.commit((state) => {
+      const timer = state.runTimers.find((item) => item.id === input.timerId);
+      if (!timer || timer.status !== "claimed") return;
+      const run = state.runs.find((item) => item.id === timer.runId);
+      if (!run || !isActiveRunStatus(run.status)) {
+        // A terminal run must never be resurrected by a retried timer.
+        timer.status = "cancelled";
+        timer.claimedAt = null;
+        return;
+      }
+      const at = input.now ?? now();
+      const retryAfterMs = Math.max(1_000, input.retryAfterMs ?? 30_000);
+      timer.status = "pending";
+      timer.claimedAt = null;
+      timer.dueAt = new Date(Date.parse(at) + retryAfterMs).toISOString();
+    });
+  }
+
+  private async listRecoverableRuns(input: { now: string; limit?: number }): Promise<Run[]> {
+    const limit = input.limit ?? 50;
+    return (await this.load()).runs
+      .filter((run) => isActiveRunStatus(run.status))
+      .filter((run) => run.leaseExpiresAt !== null && run.leaseExpiresAt <= input.now)
+      .sort((a, b) => (a.leaseExpiresAt ?? "").localeCompare(b.leaseExpiresAt ?? ""))
+      .slice(0, limit);
+  }
+}
+
+function compareReadPosition(
+  aAt: string,
+  aId: string | null,
+  bAt: string,
+  bId: string | null,
+): number {
+  const byTime = aAt.localeCompare(bAt);
+  if (byTime !== 0) return byTime;
+  return (aId ?? "").localeCompare(bId ?? "");
+}
+
+function eventDataWithMessageId(data: unknown, messageId: string): Record<string, unknown> {
+  const base =
+    data && typeof data === "object" && !Array.isArray(data)
+      ? (data as Record<string, unknown>)
+      : {};
+  return { ...base, messageId };
+}
+
+function appendRunEvent(
+  state: FileState,
+  runId: string,
+  type: string,
+  data: unknown,
+  dedupeKey: string | null,
+  timestamp: string,
+): RunEvent {
+  if (dedupeKey) {
+    const existing = state.runEvents.find(
+      (event) => event.runId === runId && event.dedupeKey === dedupeKey,
+    );
+    if (existing) return existing;
+  }
+  const seq =
+    state.runEvents
+      .filter((event) => event.runId === runId)
+      .reduce((max, event) => Math.max(max, event.seq), 0) + 1;
+  const event: RunEvent = {
+    id: `evt_${randomUUID()}`,
+    runId,
+    seq,
+    type,
+    data,
+    dedupeKey,
+    createdAt: timestamp,
+  };
+  state.runEvents.push(event);
+  return event;
+}
+
+function upsertRunTimerInState(
+  state: FileState,
+  input: { userId: string; runId: string; kind: string; dueAt: string },
+): void {
+  const existing = state.runTimers.find(
+    (timer) => timer.runId === input.runId && timer.kind === input.kind,
+  );
+  if (existing) {
+    existing.dueAt = input.dueAt;
+    existing.status = "pending";
+    existing.claimedAt = null;
+    return;
+  }
+  state.runTimers.push({
+    id: `timer_${randomUUID()}`,
+    userId: input.userId,
+    runId: input.runId,
+    kind: input.kind,
+    dueAt: input.dueAt,
+    status: "pending",
+    claimedAt: null,
+    createdAt: now(),
+  });
+}
+
+function startHandoffDueAt(timestamp: string): string {
+  return new Date(Date.parse(timestamp) + START_HANDOFF_MS).toISOString();
+}
+
+function assertIdempotentRunMatches(run: Run, input: ClaimRunInput): void {
+  if (run.conversationId !== input.conversationId) {
+    throw new StoreDomainError(
+      "conflict",
+      "This idempotency key was already used for a different conversation.",
+    );
+  }
+  if (input.kind === "approval") {
+    if (run.actionId !== input.actionId) {
+      throw new StoreDomainError(
+        "conflict",
+        "This idempotency key was already used for a different approval.",
+      );
+    }
+    return;
+  }
+  if (run.trigger.kind !== input.kind) {
+    throw new StoreDomainError(
+      "conflict",
+      "This idempotency key was already used for a different request.",
+    );
+  }
+}
+
+function claimMessageRun(state: FileState, input: ClaimMessageRunInput): ClaimRunResult {
+  const conversation = state.conversations.find(
+    (item) => item.userId === input.userId && item.id === input.conversationId,
+  );
+  if (!conversation) throw new StoreDomainError("not_found", "Conversation not found.");
+
+  if (input.idempotencyKey) {
+    const claim = state.runClaims.find(
+      (item) => item.userId === input.userId && item.idempotencyKey === input.idempotencyKey,
+    );
+    const run =
+      (claim ? state.runs.find((item) => item.id === claim.runId) : undefined) ??
+      state.runs.find(
+        (item) => item.userId === input.userId && item.idempotencyKey === input.idempotencyKey,
+      );
+    if (run) {
+      assertIdempotentRunMatches(run, input);
+      const message = run.messageId
+        ? state.messages.find((item) => item.id === run.messageId) ?? null
+        : null;
+      return { outcome: "claimed", run, message, action: null };
+    }
+  }
+
+  const active = state.runs.find(
+    (run) => run.conversationId === input.conversationId && isActiveRunStatus(run.status),
+  );
+  if (active) return { outcome: "busy", run: active };
+
+  const botId = conversation.botIds[0];
+  if (!botId) throw new StoreDomainError("not_found", "Conversation has no bot.");
+
+  const timestamp = input.now ?? now();
+  const messageId = `msg_${randomUUID()}`;
+  const message: ChatMessage & { userId: string } = {
+    ...input.message,
+    id: messageId,
+    userId: input.userId,
+    conversationId: input.conversationId,
+    status: input.message.status ?? "complete",
+    error: input.message.error ?? null,
+    runId: null,
+    createdAt: timestamp,
+  };
+  state.messages.push(message);
+
+  const run: Run = {
+    id: `run_${randomUUID()}`,
+    userId: input.userId,
+    conversationId: input.conversationId,
+    botId,
+    status: "queued",
+    trigger: { kind: "message", ...(input.trigger ?? {}) } as RunTrigger,
+    attempt: 0,
+    fence: 0,
+    idempotencyKey: input.idempotencyKey ?? null,
+    messageId,
+    actionId: null,
+    workflowRunId: null,
+    outputMessageId: null,
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    error: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  state.runs.push(run);
+
+  // Atomic handoff deadline: a crash after this commit still leaves a due
+  // timer that recovery can use to restart exactly this run.
+  upsertRunTimerInState(state, {
+    userId: input.userId,
+    runId: run.id,
+    kind: "start_handoff",
+    dueAt: startHandoffDueAt(timestamp),
+  });
+
+  conversation.activeRunId = run.id;
+  conversation.runStatus = "queued";
+  conversation.updatedAt = timestamp;
+
+  if (input.idempotencyKey) {
+    state.runClaims.push({
+      userId: input.userId,
+      idempotencyKey: input.idempotencyKey,
+      runId: run.id,
+      createdAt: timestamp,
+    });
+  }
+
+  return { outcome: "claimed", run, message, action: null };
+}
+
+function claimApprovalRun(state: FileState, input: ClaimApprovalRunInput): ClaimRunResult {
+  const conversation = state.conversations.find(
+    (item) => item.userId === input.userId && item.id === input.conversationId,
+  );
+  if (!conversation) throw new StoreDomainError("not_found", "Conversation not found.");
+
+  if (input.idempotencyKey) {
+    const claim = state.runClaims.find(
+      (item) => item.userId === input.userId && item.idempotencyKey === input.idempotencyKey,
+    );
+    if (claim) {
+      const run = state.runs.find((item) => item.id === claim.runId);
+      if (run) {
+        assertIdempotentRunMatches(run, input);
+        const action = run.actionId
+          ? state.pendingActions.find((item) => item.id === run.actionId) ?? null
+          : null;
+        return { outcome: "claimed", run, message: null, action };
+      }
+    }
+  }
+
+  const action = state.pendingActions.find(
+    (item) =>
+      item.userId === input.userId &&
+      item.conversationId === input.conversationId &&
+      item.id === input.actionId,
+  );
+  if (!action || action.status !== "pending") return { outcome: "approval_missing" };
+
+  const run = action.runId ? state.runs.find((item) => item.id === action.runId) : undefined;
+  if (!run) return { outcome: "approval_missing" };
+
+  if (run.status !== "awaiting_approval") {
+    return isActiveRunStatus(run.status)
+      ? { outcome: "busy", run }
+      : { outcome: "cancelled" };
+  }
+  if (conversation.activeRunId !== run.id) return { outcome: "cancelled" };
+
+  const timestamp = input.now ?? now();
+  run.botId = conversation.botIds[0] ?? run.botId;
+  run.actionId = action.id;
+  if (input.decision === "approve") {
+    run.status = "queued";
+    run.attempt += 1;
+    run.fence += 1;
+    run.updatedAt = timestamp;
+    action.status = "resuming";
+    conversation.activeRunId = run.id;
+    conversation.runStatus = "queued";
+    conversation.updatedAt = timestamp;
+    // The resumed attempt needs its own atomic handoff deadline.
+    upsertRunTimerInState(state, {
+      userId: input.userId,
+      runId: run.id,
+      kind: "start_handoff",
+      dueAt: startHandoffDueAt(timestamp),
+    });
+  } else {
+    run.status = "cancelled";
+    run.fence += 1;
+    run.updatedAt = timestamp;
+    action.status = "cancelled";
+    conversation.activeRunId = null;
+    conversation.runStatus = "idle";
+    conversation.updatedAt = timestamp;
+    state.messages.push({
+      id: `msg_${randomUUID()}`,
+      userId: input.userId,
+      conversationId: input.conversationId,
+      senderType: "system",
+      senderId: "system",
+      content: `Approval denied: ${action.summary}`,
+      status: "complete",
+      error: null,
+      runId: null,
+      createdAt: timestamp,
+    });
+    appendRunEvent(
+      state,
+      run.id,
+      "approval_denied",
+      { actionId: action.id, summary: action.summary },
+      null,
+      timestamp,
+    );
+  }
+
+  if (input.idempotencyKey) {
+    state.runClaims.push({
+      userId: input.userId,
+      idempotencyKey: input.idempotencyKey,
+      runId: run.id,
+      createdAt: timestamp,
+    });
+  }
+
+  return { outcome: "claimed", run, message: null, action };
+}
+
+function claimScheduledRun(state: FileState, input: ClaimScheduledRunInput): ClaimRunResult {
+  const conversation = state.conversations.find(
+    (item) => item.userId === input.userId && item.id === input.conversationId,
+  );
+  if (!conversation) throw new StoreDomainError("not_found", "Conversation not found.");
+
+  if (input.idempotencyKey) {
+    const claim = state.runClaims.find(
+      (item) => item.userId === input.userId && item.idempotencyKey === input.idempotencyKey,
+    );
+    const run =
+      (claim ? state.runs.find((item) => item.id === claim.runId) : undefined) ??
+      state.runs.find(
+        (item) => item.userId === input.userId && item.idempotencyKey === input.idempotencyKey,
+      );
+    if (run) {
+      assertIdempotentRunMatches(run, input);
+      return { outcome: "claimed", run, message: null, action: null };
+    }
+  }
+
+  const active = state.runs.find(
+    (run) => run.conversationId === input.conversationId && isActiveRunStatus(run.status),
+  );
+  if (active) return { outcome: "busy", run: active };
+
+  const botId = conversation.botIds[0];
+  if (!botId) throw new StoreDomainError("not_found", "Conversation has no bot.");
+
+  const timestamp = input.now ?? now();
+  const run: Run = {
+    id: `run_${randomUUID()}`,
+    userId: input.userId,
+    conversationId: input.conversationId,
+    botId,
+    status: "queued",
+    trigger: { kind: "scheduled", ...input.trigger } as RunTrigger,
+    attempt: 0,
+    fence: 0,
+    idempotencyKey: input.idempotencyKey ?? null,
+    messageId: null,
+    actionId: null,
+    workflowRunId: null,
+    outputMessageId: null,
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    error: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  state.runs.push(run);
+
+  upsertRunTimerInState(state, {
+    userId: input.userId,
+    runId: run.id,
+    kind: "start_handoff",
+    dueAt: startHandoffDueAt(timestamp),
+  });
+
+  conversation.activeRunId = run.id;
+  conversation.runStatus = "queued";
+  conversation.updatedAt = timestamp;
+
+  if (input.idempotencyKey) {
+    state.runClaims.push({
+      userId: input.userId,
+      idempotencyKey: input.idempotencyKey,
+      runId: run.id,
+      createdAt: timestamp,
+    });
+  }
+
+  return { outcome: "claimed", run, message: null, action: null };
 }

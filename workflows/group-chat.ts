@@ -1,24 +1,64 @@
 import { WorkflowAgent } from "@ai-sdk/workflow";
 import { Effect } from "effect";
 import { isStepCount, jsonSchema, tool, type ModelMessage, type ToolSet } from "ai";
-import type { Bot, ChatMessage } from "@slopbot/contracts";
+import { getWorkflowMetadata } from "workflow";
+import type {
+  Bot,
+  ChatMessage,
+  PendingActionStatus,
+  Run,
+  RunStatus,
+} from "@slopbot/contracts";
+import type { PendingAction } from "@db/types";
 
 import type { McpToolDefinition } from "../apps/web/lib/server/mcp";
 import { executeDesktopTool } from "./desktop-tools";
 import { nativeTools } from "./native-tools";
 import { McpService, StoreService, fromPromise, runService, withStore } from "../apps/web/lib/server/effect";
+import {
+  cancelAllTimers,
+  cancelTimers,
+  LEASE_MS,
+  scheduleApprovalTimeout,
+  scheduleLeaseRecovery,
+} from "../apps/web/lib/server/run-timers";
+
+const MAX_STEPS = 6;
+const MAX_OUTPUT_TOKENS = 1_200;
+const MAX_TOOLS = 64;
+const MAX_INTEGRATIONS = 10;
+const MAX_HISTORY = 40;
+
+export type ScheduledTrigger = {
+  automationId: string;
+  occurrenceAt: string;
+  prompt: string;
+};
 
 export type GroupTurnInput = {
   userId: string;
   conversationId: string;
-  botIds: string[];
+  runId: string;
+  /** Durable attempt number; approval resumes increment it. */
+  attempt: number;
+  /** Stable per-attempt start token, carried by value so retries reuse it. */
+  startToken: string;
   useGateway: boolean;
   resumeActionId?: string;
+  scheduled?: ScheduledTrigger;
 };
+
+export type GroupTurnResult =
+  | { outcome: "completed"; messageId: string }
+  | { outcome: "completed_silent" }
+  | { outcome: "awaiting_approval"; actionId: string }
+  | { outcome: "skipped" }
+  | { outcome: "failed"; error: string };
 
 type BotContext = {
   bot: Bot;
   messages: ModelMessage[];
+  resumeAction: PendingAction | null;
 };
 
 type LoadedTool = McpToolDefinition & {
@@ -27,122 +67,394 @@ type LoadedTool = McpToolDefinition & {
   qualifiedName: string;
 };
 
-export async function runGroupTurn(input: GroupTurnInput): Promise<{ savedMessageIds: string[]; pendingActionId?: string }> {
+type TransitionPatch = {
+  error?: string | null;
+  botId?: string;
+  workflowRunId?: string | null;
+  outputMessageId?: string | null;
+  leaseOwner?: string | null;
+  leaseExpiresAt?: string | null;
+  action?: { id: string; status: PendingActionStatus };
+  event?: { type: string; data?: unknown; dedupeKey?: string };
+};
+
+export async function runGroupTurn(input: GroupTurnInput): Promise<GroupTurnResult> {
   "use workflow";
 
-  const savedMessageIds: string[] = [];
-  try {
-    for (const botId of input.botIds.slice(0, 1)) {
-      const resumeAction = input.resumeActionId && botId === input.resumeActionId ? await loadResumeAction(input.userId, input.conversationId, botId) : null;
-      if (input.resumeActionId && !resumeAction) continue;
-      const context = resumeAction ?? await loadBotContext(input.userId, input.conversationId, botId);
-      if (!context) continue;
-      const tools = await loadBotTools(input.userId);
-      let content: string;
-      try {
-        if (!input.useGateway) {
-          content = await demoBotReply(context.bot, context.messages);
-        } else {
-          const agent = new WorkflowAgent({
-            id: context.bot.id,
-            model: context.bot.model,
-            instructions: instructionsFor(context.bot),
-            tools: { ...makeTools(tools, input.userId), ...nativeTools(context.bot.id, input.conversationId) },
-            experimental_toolApprovalSecret: { environmentVariable: "TOOL_APPROVAL_SECRET" },
-            toolCallConcurrency: 1,
-          });
-          const result = await agent.generate({
-            messages: context.messages,
-            stopWhen: isStepCount(6),
-            maxOutputTokens: 1_200,
-          });
-          const pending = approvalRequestOf(result);
-          if (pending) {
-            const actionId = await createApproval(input.userId, input.conversationId, botId, result.responseMessages, pending.summary);
-            await saveApprovalMessage(input.userId, input.conversationId, actionId);
-            return { savedMessageIds, pendingActionId: actionId };
-          }
-          if (resumeAction) await setApprovalStatus(input.userId, input.resumeActionId!, "completed");
-          content = result.text.trim() || "I don't have a useful response yet.";
-        }
-      } catch (error) {
-        content = "I hit an error while responding. Send another message or try again.";
-        await saveBotMessage(input.userId, input.conversationId, botId, content, "failed", safeError(error));
-        continue;
-      }
-      const saved = await saveBotMessage(input.userId, input.conversationId, botId, content, "complete", null);
-      savedMessageIds.push(saved);
+  const workflowRunId = getWorkflowMetadata().workflowRunId;
+  const begin = await beginRunStep(input.userId, input.runId, workflowRunId);
+  if (!begin.run) return { outcome: "skipped" };
+  if (!begin.proceed) {
+    if (input.resumeActionId && isTerminalRunStatus(begin.run.status)) {
+      await setActionStatusStep(
+        input.userId,
+        input.resumeActionId,
+        begin.run.status === "succeeded" ? "completed" : "cancelled",
+      );
     }
-    await finishGroupRun(input.userId, input.conversationId, "idle");
-    return { savedMessageIds };
+    return { outcome: "skipped" };
+  }
+
+  const run = begin.run;
+  const scheduled = scheduledTriggerOf(run, input);
+  const resumeActionId = input.resumeActionId;
+
+  try {
+    const context = await loadTurnContextStep({
+      userId: input.userId,
+      conversationId: input.conversationId,
+      runId: input.runId,
+      resumeActionId,
+      scheduled,
+    });
+    if (!context) {
+      await transitionRunStep({
+        userId: input.userId,
+        runId: input.runId,
+        from: "running",
+        to: "failed",
+        patch: {
+          error: "Could not load the conversation context.",
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          action: resumeActionId ? { id: resumeActionId, status: "cancelled" } : undefined,
+          event: { type: "failed", data: { error: "context_unavailable" }, dedupeKey: `failed:${input.runId}` },
+        },
+      });
+      return { outcome: "failed", error: "Could not load the conversation context." };
+    }
+
+    const tools = await loadBotTools(input.userId);
+    let text: string;
+
+    if (!input.useGateway) {
+      text = await demoBotReply(context.bot, context.messages);
+    } else {
+      const agent = new WorkflowAgent({
+        id: context.bot.id,
+        model: context.bot.model,
+        instructions: instructionsFor(context.bot),
+        tools: { ...makeTools(tools, input.userId), ...nativeTools(context.bot.id, input.conversationId) },
+        experimental_toolApprovalSecret: { environmentVariable: "TOOL_APPROVAL_SECRET" },
+        toolCallConcurrency: 1,
+      });
+      const result = await agent.generate({
+        messages: context.messages,
+        stopWhen: isStepCount(MAX_STEPS),
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+      });
+
+      const pending = approvalRequestOf(result);
+      if (pending) {
+        const action = await createApprovalStep({
+          userId: input.userId,
+          conversationId: input.conversationId,
+          runId: input.runId,
+          botId: context.bot.id,
+          summary: pending.summary,
+          providerApprovalId: pending.approvalId,
+          modelMessages: [...context.messages, ...(result.responseMessages as ModelMessage[])],
+        });
+        const waiting = await transitionRunStep({
+          userId: input.userId,
+          runId: input.runId,
+          from: "running",
+          to: "awaiting_approval",
+          patch: {
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            action: resumeActionId ? { id: resumeActionId, status: "completed" } : undefined,
+            event: {
+              type: "awaiting_approval",
+              data: { actionId: action.actionId },
+              dedupeKey: `awaiting:${action.actionId}`,
+            },
+          },
+        });
+        if (waiting.outcome !== "applied") {
+          await setActionStatusStep(input.userId, action.actionId, "cancelled");
+          return { outcome: "skipped" };
+        }
+        return { outcome: "awaiting_approval", actionId: action.actionId };
+      }
+
+      text = result.text.trim();
+    }
+
+    if (scheduled && isNoReply(text)) {
+      const done = await transitionRunStep({
+        userId: input.userId,
+        runId: input.runId,
+        from: "running",
+        to: "succeeded",
+        patch: {
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          action: resumeActionId ? { id: resumeActionId, status: "completed" } : undefined,
+          event: { type: "succeeded", data: { silent: true }, dedupeKey: `succeeded:${input.runId}` },
+        },
+      });
+      return done.outcome === "applied" ? { outcome: "completed_silent" } : { outcome: "skipped" };
+    }
+
+    const content = text || "I don't have a useful response yet.";
+    const saved = await completeWithMessageStep({
+      userId: input.userId,
+      runId: input.runId,
+      content,
+      actionId: resumeActionId,
+    });
+    if (saved.outcome === "stale") return { outcome: "skipped" };
+    return { outcome: "completed", messageId: saved.messageId };
   } catch (error) {
-    await recordGroupFailure(input.userId, input.conversationId, safeError(error));
-    throw error;
+    const message = safeError(error);
+    await failRunStep({
+      userId: input.userId,
+      runId: input.runId,
+      error: message,
+      resumeActionId,
+    });
+    return { outcome: "failed", error: message };
   }
 }
 
-async function loadBotContext(userId: string, conversationId: string, botId: string): Promise<BotContext | null> {
+async function beginRunStep(
+  userId: string,
+  runId: string,
+  workflowRunId: string,
+): Promise<{ proceed: boolean; run: Run | null }> {
   "use step";
   return runService(withStore(async (store) => {
-    const [conversation, bot, history, allBots] = await Promise.all([
-      store.getConversation(userId, conversationId),
-      store.getBot(userId, botId),
-      store.listMessages(userId, conversationId),
-      store.listBots(userId),
-    ]);
-    if (!conversation || !bot || !conversation.botIds.includes(botId)) return null;
-    return { bot, messages: toModelMessages(history, botId, allBots) };
-  }));
-}
+    const run = await store.runs.getRun(userId, runId);
+    if (!run) return { proceed: false, run: null };
+    if (run.status === "running") {
+      return { proceed: run.workflowRunId === workflowRunId, run };
+    }
+    if (run.status !== "queued") return { proceed: false, run };
 
-async function loadResumeAction(userId: string, conversationId: string, actionId: string): Promise<BotContext | null> {
-  "use step";
-  return runService(withStore(async (store) => {
-    const action = await store.getPendingAction(userId, actionId);
-    if (!action || action.status !== "pending") return null;
-    const bot = await store.getBot(userId, action.botId);
-    if (!bot) return null;
+    const leaseExpiresAt = new Date(Date.now() + LEASE_MS).toISOString();
+    await scheduleLeaseRecovery(store, run, leaseExpiresAt);
+    const result = await store.runs.transitionRun({
+      userId,
+      runId,
+      expectedStatus: "queued",
+      expectedFence: run.fence,
+      status: "running",
+      workflowRunId,
+      leaseOwner: workflowRunId,
+      leaseExpiresAt,
+      botId: run.botId,
+      timers: cancelTimers("start_handoff"),
+    });
+    if (result.outcome === "applied") return { proceed: true, run: result.run };
+
+    const current = await store.runs.getRun(userId, runId);
     return {
-      bot,
-      messages: [
-        ...(action.modelMessages as ModelMessage[]),
-        { role: "tool", content: [{ type: "tool-approval-response", approvalId: action.id, approved: true }] },
-      ],
+      proceed: current?.status === "running" && current.workflowRunId === workflowRunId,
+      run: current,
     };
   }));
 }
 
-async function createApproval(userId: string, conversationId: string, botId: string, modelMessages: ModelMessage[], summary: string): Promise<string> {
+async function transitionRunStep(input: {
+  userId: string;
+  runId: string;
+  from: RunStatus;
+  to: RunStatus;
+  patch?: TransitionPatch;
+}): Promise<{ outcome: "applied"; run: Run } | { outcome: "stale" }> {
   "use step";
   return runService(withStore(async (store) => {
-    const action = await store.createPendingAction({ userId, conversationId, botId, kind: "tool_approval", summary, modelMessages });
-    return action.id;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const run = await store.runs.getRun(input.userId, input.runId);
+      if (!run || run.status !== input.from) return { outcome: "stale" as const };
+      if (input.to === "awaiting_approval") {
+        await scheduleApprovalTimeout(store, run, new Date());
+      }
+      const timers =
+        input.to === "awaiting_approval"
+          ? cancelTimers("lease_recovery", "start_handoff")
+          : isTerminalRunStatus(input.to)
+            ? cancelAllTimers()
+            : undefined;
+      const result = await store.runs.transitionRun({
+        userId: input.userId,
+        runId: input.runId,
+        expectedStatus: input.from,
+        expectedFence: run.fence,
+        status: input.to,
+        ...input.patch,
+        ...(timers ? { timers } : {}),
+      });
+      if (result.outcome === "applied") return { outcome: "applied" as const, run: result.run };
+    }
+    return { outcome: "stale" as const };
   }));
 }
 
-async function saveApprovalMessage(userId: string, conversationId: string, actionId: string): Promise<void> {
-  "use step";
-  await runService(withStore((store) => store.addMessage(userId, {
-    conversationId,
-    senderType: "system",
-    senderId: actionId,
-    content: "Approval required for send_email. Review the request and approve it in this chat.",
-  })));
+/**
+ * The statuses from which an unexpected turn error may safely fail the run.
+ * Terminal runs are never resurrected, and a run that is still queued is left
+ * to admission/recovery rather than being failed by a stale workflow attempt.
+ */
+export function failureTransitionFrom(status: RunStatus): "running" | "awaiting_approval" | null {
+  if (status === "running" || status === "awaiting_approval") return status;
+  return null;
 }
 
-async function setApprovalStatus(userId: string, actionId: string, status: "completed" | "cancelled"): Promise<void> {
+async function failRunStep(input: {
+  userId: string;
+  runId: string;
+  error: string;
+  resumeActionId?: string;
+}): Promise<void> {
   "use step";
-  await runService(withStore((store) => store.setPendingActionStatus(userId, actionId, status)));
+  await runService(withStore(async (store) => {
+    const run = await store.runs.getRun(input.userId, input.runId);
+    if (!run) return;
+    const from = failureTransitionFrom(run.status);
+    if (!from) return;
+
+    // Cancel the approval that belongs to this run, if any. A fresh action is
+    // only cancelled when the run itself is being failed, never merely because
+    // a transition report failed.
+    const pending = await store.listPendingActions(input.userId, run.conversationId);
+    const action = pending.find(
+      (item) =>
+        item.runId === run.id && (item.status === "pending" || item.status === "resuming"),
+    );
+    let actionId = action?.id;
+    if (!actionId && input.resumeActionId) {
+      const resume = await store.getPendingAction(input.userId, input.resumeActionId);
+      if (resume && (resume.status === "pending" || resume.status === "resuming")) {
+        actionId = resume.id;
+      }
+    }
+
+    await store.runs.transitionRun({
+      userId: input.userId,
+      runId: input.runId,
+      expectedStatus: from,
+      expectedFence: run.fence,
+      status: "failed",
+      error: input.error,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      action: actionId ? { id: actionId, status: "cancelled" } : undefined,
+      event: { type: "failed", data: { error: input.error }, dedupeKey: `failed:${input.runId}` },
+      timers: cancelAllTimers(),
+    });
+  }));
 }
 
-function approvalRequestOf(result: { content: Array<{ type: string; approvalId?: string; input?: unknown }> }): { approvalId: string; summary: string } | null {
-  const request = result.content.find((part) => part.type === "tool-approval-request" && part.approvalId);
-  if (!request?.approvalId) return null;
-  const input = request.input as { to?: unknown; subject?: unknown; text?: unknown } | undefined;
-  const summary = input
-    ? `send_email to ${String(input.to ?? "recipient")}\nSubject: ${String(input.subject ?? "(no subject)")}\n\n${String(input.text ?? "")}`
-    : "send_email";
-  return { approvalId: request.approvalId, summary };
+async function loadTurnContextStep(input: {
+  userId: string;
+  conversationId: string;
+  runId: string;
+  resumeActionId?: string;
+  scheduled: ScheduledTrigger | null;
+}): Promise<BotContext | null> {
+  "use step";
+  return runService(withStore(async (store) => {
+    const run = await store.runs.getRun(input.userId, input.runId);
+    if (!run) return null;
+    const bot = await store.getBot(input.userId, run.botId);
+    if (!bot) return null;
+
+    if (input.resumeActionId) {
+      const action = await store.getPendingAction(input.userId, input.resumeActionId);
+      if (!action || action.runId !== run.id) return null;
+      if (action.status !== "resuming" && action.status !== "pending") return null;
+      if (!action.providerApprovalId) return null;
+      return {
+        bot,
+        resumeAction: action,
+        messages: buildResumeMessages(action),
+      };
+    }
+
+    const [history, allBots] = await Promise.all([
+      store.listMessages(input.userId, input.conversationId),
+      store.listBots(input.userId),
+    ]);
+    const messages = toModelMessages(history, run.botId, allBots, input.scheduled ? "scheduled" : "message");
+    if (input.scheduled) messages.push({ role: "user", content: input.scheduled.prompt });
+    return { bot, messages, resumeAction: null };
+  }));
+}
+
+async function createApprovalStep(input: {
+  userId: string;
+  conversationId: string;
+  runId: string;
+  botId: string;
+  summary: string;
+  providerApprovalId: string;
+  modelMessages: ModelMessage[];
+}): Promise<{ actionId: string }> {
+  "use step";
+  return runService(withStore(async (store) => {
+    const action = await store.createPendingAction({
+      userId: input.userId,
+      conversationId: input.conversationId,
+      botId: input.botId,
+      kind: "tool_approval",
+      summary: input.summary,
+      modelMessages: input.modelMessages,
+      runId: input.runId,
+      providerApprovalId: input.providerApprovalId,
+    });
+    return { actionId: action.id };
+  }));
+}
+
+async function setActionStatusStep(
+  userId: string,
+  actionId: string,
+  status: PendingActionStatus,
+): Promise<void> {
+  "use step";
+  await runService(withStore(async (store) => {
+    const action = await store.getPendingAction(userId, actionId);
+    if (!action) return;
+    if (action.status === "completed" || action.status === "cancelled" || action.status === "expired") return;
+    await store.setPendingActionStatus(userId, actionId, status);
+  }));
+}
+
+async function completeWithMessageStep(input: {
+  userId: string;
+  runId: string;
+  content: string;
+  actionId?: string;
+}): Promise<{ outcome: "applied" | "idempotent" | "stale"; messageId: string }> {
+  "use step";
+  return runService(withStore(async (store) => {
+    const run = await store.runs.getRun(input.userId, input.runId);
+    if (!run) return { outcome: "stale" as const, messageId: "" };
+    if (run.status === "succeeded" && run.outputMessageId) {
+      return { outcome: "idempotent" as const, messageId: run.outputMessageId };
+    }
+    if (run.status !== "running") return { outcome: "stale" as const, messageId: "" };
+
+    const result = await store.runs.completeWithMessage({
+      userId: input.userId,
+      runId: input.runId,
+      expectedStatus: "running",
+      expectedFence: run.fence,
+      content: input.content,
+      action: input.actionId ? { id: input.actionId, status: "completed" } : undefined,
+      event: { type: "succeeded", dedupeKey: `succeeded:${input.runId}` },
+      timers: cancelAllTimers(),
+    });
+    if (result.outcome === "applied") {
+      return { outcome: "applied" as const, messageId: result.message.id };
+    }
+    if (result.outcome === "idempotent") {
+      return { outcome: "idempotent" as const, messageId: result.message.id };
+    }
+    return { outcome: "stale" as const, messageId: "" };
+  }));
 }
 
 async function loadBotTools(userId: string): Promise<LoadedTool[]> {
@@ -153,7 +465,7 @@ async function loadBotTools(userId: string): Promise<LoadedTool[]> {
     const connections = yield* fromPromise(() => store.listIntegrations(userId));
     const integrationIds = connections.map((connection) => connection.id);
     const groups = yield* fromPromise(() => Promise.all(
-      integrationIds.slice(0, 10).map(async (integrationId) => {
+      integrationIds.slice(0, MAX_INTEGRATIONS).map(async (integrationId) => {
         try {
           const tools = await mcp.list(userId, integrationId);
           const integration = await store.getIntegration(userId, integrationId);
@@ -170,7 +482,7 @@ async function loadBotTools(userId: string): Promise<LoadedTool[]> {
         }
       }),
     ));
-    return groups.flat().slice(0, 64) as LoadedTool[];
+    return groups.flat().slice(0, MAX_TOOLS) as LoadedTool[];
   }));
 }
 
@@ -199,48 +511,6 @@ async function demoBotReply(bot: Bot, messages: ModelMessage[]): Promise<string>
   }));
 }
 
-async function saveBotMessage(
-  userId: string,
-  conversationId: string,
-  botId: string,
-  content: string,
-  status: "complete" | "failed",
-  error: string | null,
-): Promise<string> {
-  "use step";
-  return runService(withStore(async (store) => {
-    const message = await store.addMessage(userId, {
-      conversationId,
-      senderType: "bot",
-      senderId: botId,
-      content,
-      status,
-      error,
-    });
-    return message.id;
-  }));
-}
-
-async function finishGroupRun(userId: string, conversationId: string, status: "idle" | "failed"): Promise<void> {
-  "use step";
-  return runService(withStore((store) => store.setConversationRun(userId, conversationId, null, status)));
-}
-
-async function recordGroupFailure(userId: string, conversationId: string, error: string): Promise<void> {
-  "use step";
-  return runService(withStore(async (store) => {
-    await store.addMessage(userId, {
-      conversationId,
-      senderType: "system",
-      senderId: "system",
-      content: "The reply stopped unexpectedly. You can retry without losing earlier messages.",
-      status: "failed",
-      error,
-    });
-    await store.setConversationRun(userId, conversationId, null, "failed");
-  }));
-}
-
 function makeTools(definitions: LoadedTool[], userId: string): ToolSet {
   return Object.fromEntries(
     definitions.map((definition) => [
@@ -257,11 +527,11 @@ function makeTools(definitions: LoadedTool[], userId: string): ToolSet {
                 args: args as Record<string, unknown>,
               })
             : executeMcpToolStep({
-            userId,
-            integrationId: definition.integrationId,
-            toolName: definition.name,
-            args: args as Record<string, unknown>,
-            }),
+                userId,
+                integrationId: definition.integrationId,
+                toolName: definition.name,
+                args: args as Record<string, unknown>,
+              }),
       }),
     ]),
   );
@@ -278,10 +548,17 @@ function instructionsFor(bot: Bot): string {
   ].join("\n\n");
 }
 
-function toModelMessages(history: ChatMessage[], currentBotId: string, bots: Bot[]): ModelMessage[] {
-  const relevant = history.filter((message) => message.status === "complete").slice(-40);
+function toModelMessages(
+  history: ChatMessage[],
+  currentBotId: string,
+  bots: Bot[],
+  mode: "message" | "scheduled" = "message",
+): ModelMessage[] {
+  const relevant = history.filter((message) => message.status === "complete").slice(-MAX_HISTORY);
   if (relevant.length === 0) {
-    return [{ role: "user", content: "The human opened this chat. Introduce yourself briefly and invite them to share what they need help with." }];
+    return mode === "scheduled"
+      ? []
+      : [{ role: "user", content: "The human opened this chat. Introduce yourself briefly and invite them to share what they need help with." }];
   }
   return relevant.map((message) => {
     if (message.senderType === "bot" && message.senderId === currentBotId) {
@@ -307,4 +584,73 @@ function safeToolName(integrationId: string, name: string): string {
 
 function safeError(error: unknown): string {
   return (error instanceof Error ? error.message : "Agent turn failed.").slice(0, 500);
+}
+
+function isTerminalRunStatus(status: RunStatus): boolean {
+  return status === "succeeded" || status === "failed" || status === "cancelled" || status === "expired";
+}
+
+function scheduledTriggerOf(run: Run, input: GroupTurnInput): ScheduledTrigger | null {
+  if (input.scheduled) return input.scheduled;
+  if (run.trigger.kind !== "scheduled") return null;
+  const prompt = typeof run.trigger.prompt === "string" ? run.trigger.prompt : "";
+  if (!prompt) return null;
+  return {
+    automationId: typeof run.trigger.automationId === "string" ? run.trigger.automationId : "",
+    occurrenceAt: typeof run.trigger.occurrenceAt === "string" ? run.trigger.occurrenceAt : "",
+    prompt,
+  };
+}
+
+type ApprovalContentPart = {
+  type: string;
+  approvalId?: string;
+  isAutomatic?: boolean;
+  toolCall?: { input?: unknown };
+};
+
+/**
+ * Reads a manual tool-approval request from a generation result. Automatic
+ * approvals are ignored because they do not need a human decision.
+ */
+export function approvalRequestOf(
+  result: { content: ReadonlyArray<ApprovalContentPart> },
+): { approvalId: string; summary: string } | null {
+  const request = result.content.find(
+    (part) =>
+      part.type === "tool-approval-request" &&
+      !part.isAutomatic &&
+      typeof part.approvalId === "string" &&
+      part.approvalId.length > 0,
+  );
+  if (!request?.approvalId) return null;
+  const input = request.toolCall?.input as { to?: unknown; subject?: unknown; text?: unknown } | undefined;
+  const summary = input
+    ? `send_email to ${String(input.to ?? "recipient")}\nSubject: ${String(input.subject ?? "(no subject)")}\n\n${String(input.text ?? "")}`
+    : "send_email";
+  return { approvalId: request.approvalId, summary };
+}
+
+/**
+ * Rebuilds the model context for an approved tool call. The stored history
+ * already contains the original conversation plus the generated tool call and
+ * approval request, so only the provider approval response is appended.
+ */
+export function buildResumeMessages(
+  action: Pick<PendingAction, "modelMessages" | "providerApprovalId">,
+): ModelMessage[] {
+  const history = Array.isArray(action.modelMessages) ? (action.modelMessages as ModelMessage[]) : [];
+  if (!action.providerApprovalId) return history;
+  return [
+    ...history,
+    {
+      role: "tool",
+      content: [{ type: "tool-approval-response", approvalId: action.providerApprovalId, approved: true }],
+    },
+  ];
+}
+
+/** Scheduled turns may opt out of a visible reply with an exact NO_REPLY. */
+export function isNoReply(text: string): boolean {
+  return text.trim() === "NO_REPLY";
 }

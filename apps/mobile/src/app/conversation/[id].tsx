@@ -49,6 +49,17 @@ export default function ConversationScreen() {
     return () => { active = false; };
   }, [id]);
 
+  const lastMarkedMessageId = useRef<string | null>(null);
+  useEffect(() => {
+    const latest = detail?.messages[detail.messages.length - 1];
+    if (!latest || lastMarkedMessageId.current === latest.id) return;
+    lastMarkedMessageId.current = latest.id;
+    void api(`/api/conversations/${id}/read`, {
+      method: 'POST',
+      body: JSON.stringify({ messageId: latest.id }),
+    }).then(() => refresh()).catch(() => undefined);
+  }, [detail?.messages, id, refresh]);
+
   const running = detail?.conversation.runStatus === 'running';
   useEffect(() => {
     if (!running) { void refresh(); return; }

@@ -17,6 +17,7 @@
     "start": "pnpm --dir apps/web start",
     "typecheck": "tsc --noEmit && pnpm --filter @slopbot/contracts typecheck && pnpm --filter @slopbot/mobile typecheck && pnpm --dir apps/desktop typecheck",
     "test": "vitest run",
+    "tick": "dotenv -e .env -e .env.local -- tsx scripts/tick.ts",
     "db:migrate": "dotenv -e .env -e .env.local -- tsx db/migrate.ts"
   },
   "dependencies": {
@@ -32,6 +33,7 @@
     "ai": "^7.0.165",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.5.2",
+    "croner": "11.0.1",
     "drizzle-orm": "^0.45.4",
     "effect": "^4.1.2",
     "jose": "^6.2.15",

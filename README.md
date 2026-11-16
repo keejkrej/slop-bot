@@ -8,11 +8,23 @@ A single-tenant personal bot club for Android, web, and desktop. Create custom b
 - **Android:** Expo SDK 57, Expo Router, React Native Reusables, NativeWind.
 - **Shared design:** `@slopbot/design-tokens` supplies Lyra's neutral palette, monospace type, square geometry, spacing, and semantic tokens to every client.
 - **Agents:** AI SDK 7 `WorkflowAgent` (the durable `ToolLoopAgent` counterpart), Vercel AI Gateway with `anthropic/claude-sonnet-5.5` as the default model, and Vercel Workflows.
-- **Persistence:** Drizzle + Postgres in production; an atomic file store for zero-setup local development.
+- **Persistence:** Drizzle + Postgres in production; an atomic, single-process file store for zero-setup local development.
+- **Proactive automations:** user-managed one-time or five-field cron schedules in an IANA timezone, bound to a bot's existing conversation, with durable runs, busy queuing, catch-up coalescing, and an in-app Activity view on web and desktop.
+- **Durable runs:** fenced per-conversation runs with idempotent message, approval, and scheduled starts; approval decisions resume through a public persistent seam.
 - **Connections:** custom Streamable HTTP MCP, OAuth discovery + dynamic client registration + PKCE, and optional encrypted API-key headers for providers such as Composio.
 - **Native capabilities:** Parallel Search, per-bot Mem0 memory, just-in-time Vercel Sandbox computers, and AgentMail sends with durable signed approval/resume.
 - **Desktop:** Electrobun with the native system webview (WKWebView, WebView2, or WebKitGTK). Its outbound bridge reaches MCP servers on your computer without opening an inbound cloud-accessible port.
 - **Application layer:** Effect 4 services, Layers, typed errors, and dependency injection for storage, authentication, and MCP.
+
+## Proactive automations
+
+Automations are user-managed schedules bound to a bot's existing conversation. A schedule is either a one-time local timestamp or a standard five-field cron expression, each with an IANA timezone. Due work is admitted as a durable run; if the conversation is busy, the occurrence stays queued and a later tick retries it. Recurring catch-up coalesces missed occurrences into the latest one, and a one-time task expires after 24 hours late. Results and run history appear in the in-app Activity view on web and desktop; unread bot-message badges appear on web and mobile, backed by a per-conversation read bookmark. There is no Android Activity surface yet. `GET /api/activity` returns read-only run summaries for the signed-in user.
+
+Runs are the durable record for regular messages, approvals, and scheduled work. Message, approval, and scheduled starts share one claim-and-admit path with idempotency keys, and approval decisions resume through a public persistent seam. A run's terminal completion writes the bot message and the succeeded status atomically, and start tokens are scoped per attempt so an approval resume gets a fresh owner. Idempotency reduces duplicate work but does not make external side effects exactly-once.
+
+`FileStore` is single-process and intended for local development; production requires Postgres.
+
+See [always-on.md](docs/architecture/always-on.md), [scheduling.md](docs/architecture/scheduling.md), and [run-recovery.md](docs/architecture/run-recovery.md).
 
 ## Run locally
 
@@ -25,6 +37,16 @@ pnpm dev
 ```
 
 Open **http://localhost:3000**. Local mode uses `demo-user`, `apps/web/.data/store.json`, and a deterministic demo responder when no gateway credentials are present. If `AI_GATEWAY_API_KEY` is set, bots use the configured Vercel AI Gateway model instead.
+
+### Scheduler tick
+
+`next dev` does not run a continuous background timer. Trigger a tick manually:
+
+```bash
+pnpm tick
+```
+
+`pnpm tick` runs the scheduled-task pass and durable run recovery in one pass.
 
 ### Android phone
 
@@ -149,6 +171,16 @@ In the signed-in web app, open **Connections → Desktop setup** to copy the tok
 
 No local MCP URL or listening port is made available to the cloud. Tool arguments and results do cross the bridge when you ask a cloud-hosted bot to use a local tool.
 
+### 6. Scheduler tick
+
+Production uses a static Vercel Schedule in `apps/web/vercel.json` that POSTs `/api/cron/tick` every 15 minutes. Set a secret:
+
+```dotenv
+CRON_SECRET=<openssl rand -hex 32>
+```
+
+`CRON_SECRET` is required in production (the route fails closed when unset) and optional locally. Rotating it requires redeploying so the new value reaches the deployment environment. Scheduling does not use `@vercel/schedules` or a queue product.
+
 ## Deploy to Vercel
 
 Use `apps/web` as the Vercel project's root directory. Install workspace dependencies and run `pnpm build` for the web project. The Next.js configuration in `apps/web/next.config.ts` enables `withWorkflow` and generates the workflow routes.
@@ -162,6 +194,7 @@ Required production environment:
 - `BETTER_AUTH_SECRET`
 - `ALLOWED_USER_ID`
 - `APP_URL`
+- `CRON_SECRET`
 - AI Gateway OIDC access or `AI_GATEWAY_API_KEY`
 
 Optional: `DESKTOP_PAIRING_TOKEN` and `DESKTOP_USER_ID`.
@@ -172,16 +205,19 @@ Optional: `DESKTOP_PAIRING_TOKEN` and `DESKTOP_USER_ID`.
 pnpm test
 pnpm typecheck
 pnpm build
+pnpm tick
 pnpm build:desktop
 pnpm --filter @slopbot/mobile export:android
 ```
 
-The repository includes unit tests for shared contracts, persistence/secret isolation, desktop-job idempotency, and Effect service injection. The local fixture at `tests/fixtures/local-mcp-server.mjs` provides a loopback-only read-only MCP tool for bridge testing.
+The repository includes unit tests for shared contracts, persistence/secret isolation, desktop-job idempotency, Effect service injection, schedule-time calculation, automation storage, cron auth, and run recovery. The local fixture at `tests/fixtures/local-mcp-server.mjs` provides a loopback-only read-only MCP tool for bridge testing.
 
 ## Intentional MVP boundaries
 
 - A chat has exactly one bot. Replies are bounded to six model steps.
 - Clients poll persisted messages; resumable token-by-token streaming is not yet exposed.
-- MCP tools are exposed only when explicitly marked read-only. Writes remain blocked until durable per-call approval UI is implemented.
+- MCP tools are exposed only when explicitly marked read-only; general writes remain blocked.
+- Proactive results stay in the in-app Activity view. There is no Slack, Telegram, inbound email, or push delivery channel, and no background memory dreaming or heartbeat loop.
+- Idempotency keys reduce duplicate work but do not guarantee exactly-once external side effects.
 - Bots do not autonomously create endless conversations or recurse into uncontrolled bot-to-bot loops.
 - This is a personal single-tenant product, not a multi-organization permissions system.
