@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpIcon, MicrophoneIcon, PlusIcon, WaveformIcon } from "@phosphor-icons/react";
 import type { Bot, ChatMessage, ConversationDetail } from "@slopbot/contracts";
-import { api, getConversation } from "@/lib/client/api";
+import { api, getConversation, markConversationRead } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,7 +20,8 @@ export function ChatView({ chatId, bots, selectedBotId, onRefresh, onBot }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const endRef = useRef<HTMLDivElement>(null);
-  const wasRunning = useRef(false);
+  const wasActive = useRef(false);
+  const lastMarkedMessageId = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     try { setDetail(await getConversation(chatId)); setError(undefined); }
@@ -28,23 +29,35 @@ export function ChatView({ chatId, bots, selectedBotId, onRefresh, onBot }: {
   }, [chatId]);
 
   useEffect(() => { void load(); }, [load]);
-  const running = detail?.conversation.runStatus === "running";
+
+  // Mark read only when a newer latest message is observed, never on every poll.
   useEffect(() => {
-    if (wasRunning.current && !running) void onRefresh();
-    wasRunning.current = Boolean(running);
-  }, [running, onRefresh]);
+    const latest = detail?.messages[detail.messages.length - 1];
+    if (!latest || lastMarkedMessageId.current === latest.id) return;
+    lastMarkedMessageId.current = latest.id;
+    void markConversationRead(chatId, latest.id)
+      .then(() => onRefresh())
+      .catch(() => undefined);
+  }, [detail?.messages, chatId, onRefresh]);
+  const runStatus = detail?.conversation.runStatus;
+  const active = runStatus === "queued" || runStatus === "running" || runStatus === "awaiting_approval";
+  const polling = runStatus === "queued" || runStatus === "running";
   useEffect(() => {
-    if (!running) return;
+    if (wasActive.current && !active) void onRefresh();
+    wasActive.current = Boolean(active);
+  }, [active, onRefresh]);
+  useEffect(() => {
+    if (!polling) return;
     const timer = window.setInterval(() => void load(), 900);
     return () => window.clearInterval(timer);
-  }, [running, load]);
+  }, [polling, load]);
   const messageCount = detail?.messages.length;
-  useEffect(() => { if (running || (messageCount ?? 0) > 0) endRef.current?.scrollIntoView({ block: "end" }); }, [messageCount, running]);
+  useEffect(() => { if (active || (messageCount ?? 0) > 0) endRef.current?.scrollIntoView({ block: "end" }); }, [messageCount, active]);
 
   async function send(event?: React.FormEvent) {
     event?.preventDefault();
     const content = draft.trim();
-    if (!content || busy || running) return;
+    if (!content || busy || active) return;
     setBusy(true); setError(undefined); setDraft("");
     try {
       await api(`/api/conversations/${chatId}/messages`, { method: "POST", body: JSON.stringify({ content }) });
@@ -76,7 +89,7 @@ export function ChatView({ chatId, bots, selectedBotId, onRefresh, onBot }: {
         </div>
       </header>
 
-      <div aria-busy={running} className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">
+      <div aria-busy={active} className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-3xl px-4 py-4 sm:px-6 sm:py-6">
           <div aria-live="polite" aria-relevant="additions text" className="space-y-4">
             {detail.messages.map((message) => <MessageBubble key={message.id} message={message} />)}
@@ -90,12 +103,9 @@ export function ChatView({ chatId, bots, selectedBotId, onRefresh, onBot }: {
             </section>
           ))}
 
-          {running ? (
-            <div className="mt-8 inline-flex items-center gap-3 border border-border/70 bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground" role="status">
-              <span className="flex gap-1"><i className="size-1 animate-pulse bg-current" /><i className="size-1 animate-pulse bg-current [animation-delay:150ms]" /><i className="size-1 animate-pulse bg-current [animation-delay:300ms]" /></span>
-              Bots are responding in sequence…
-            </div>
-          ) : null}
+          {runStatus === "queued" ? <RunStatusLine label="Queued…" /> : null}
+          {runStatus === "running" ? <RunStatusLine label="Bots are responding in sequence…" /> : null}
+          {runStatus === "awaiting_approval" ? <RunStatusLine label="Waiting for your approval…" /> : null}
           {error ? <p className="mt-6 border-l-2 border-destructive pl-3 text-destructive text-xs" role="alert">{error}</p> : null}
           <div ref={endRef} />
         </div>
@@ -107,16 +117,16 @@ export function ChatView({ chatId, bots, selectedBotId, onRefresh, onBot }: {
           <Textarea
             aria-label="Message the bot"
             className="h-9 max-h-40 min-h-9 min-w-0 flex-1 resize-none border-0 bg-transparent px-2 py-2 text-[13px] leading-5 focus-visible:ring-0 disabled:bg-transparent md:text-[13px]"
-            disabled={busy || running}
+            disabled={busy || active}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }}
-            placeholder={running ? "Wait for the reply to finish…" : "Message the bot…"}
+            placeholder={runStatus === "awaiting_approval" ? "Approve or deny the request above…" : active ? "Wait for the reply to finish…" : "Message the bot…"}
             rows={1}
             value={draft}
           />
           <Button aria-label="Voice input" className="size-9" disabled size="icon-lg" title="Voice input isn't available yet" type="button" variant="ghost"><MicrophoneIcon /></Button>
           {draft.trim().length > 0 ? (
-            <Button aria-label="Send message" className="size-9" disabled={busy || running} size="icon-lg" type="submit" variant="ghost">{busy ? <Spinner /> : <ArrowUpIcon />}</Button>
+            <Button aria-label="Send message" className="size-9" disabled={busy || active} size="icon-lg" type="submit" variant="ghost">{busy ? <Spinner /> : <ArrowUpIcon />}</Button>
           ) : (
             <Button aria-label="Voice chat" className="size-9" disabled size="icon-lg" title="Voice chat isn't available yet" type="button" variant="ghost"><WaveformIcon /></Button>
           )}
@@ -124,6 +134,15 @@ export function ChatView({ chatId, bots, selectedBotId, onRefresh, onBot }: {
         <p className="sr-only">Enter to send. Shift and Enter creates a new line.</p>
       </div>
     </main>
+  );
+}
+
+function RunStatusLine({ label }: { label: string }) {
+  return (
+    <div className="mt-8 inline-flex items-center gap-3 border border-border/70 bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground" role="status">
+      <span className="flex gap-1"><i className="size-1 animate-pulse bg-current" /><i className="size-1 animate-pulse bg-current [animation-delay:150ms]" /><i className="size-1 animate-pulse bg-current [animation-delay:300ms]" /></span>
+      {label}
+    </div>
   );
 }
 

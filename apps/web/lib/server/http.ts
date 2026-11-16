@@ -1,4 +1,5 @@
 import { ZodError, type ZodType } from "zod";
+import { StoreDomainError } from "@db/types";
 
 export class ApiError extends Error {
   constructor(
@@ -22,6 +23,12 @@ export async function parseJson<T>(request: Request, schema: ZodType<T>): Promis
 export function errorResponse(error: unknown): Response {
   console.error(error);
   if (error instanceof ApiError) return Response.json({ error: error.message }, { status: error.status });
+  if (error instanceof StoreDomainError) {
+    return Response.json(
+      { error: error.message },
+      { status: error.code === "not_found" ? 404 : 409 },
+    );
+  }
   if (error instanceof ZodError) {
     return Response.json({ error: error.issues[0]?.message ?? "Invalid request." }, { status: 400 });
   }

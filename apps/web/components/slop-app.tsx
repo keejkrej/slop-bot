@@ -57,6 +57,15 @@ export function SlopApp() {
     }).catch(() => setAuthChecked(true));
   }, [reload]);
 
+  const hasData = Boolean(data);
+  useEffect(() => {
+    if (!hasData) return;
+    // Modest bounded poll so proactively delivered bot messages surface
+    // without keeping a chat open. Reuses the bootstrap reload.
+    const timer = window.setInterval(() => void reload(), 15_000);
+    return () => window.clearInterval(timer);
+  }, [hasData, reload]);
+
   useEffect(() => {
     const sendToHost = window.__electrobunSendToHost;
     if (!data || typeof sendToHost !== "function") return;
@@ -165,6 +174,7 @@ export function SlopApp() {
       <WorkspaceSettings
         data={data}
         onAddConnection={addConnection}
+        onBot={(botId) => { setSelectedBotId(botId); setSettingsOpen(false); }}
         onCreateBot={createBot}
         onOpenChange={setSettingsOpen}
         onRefresh={reload}
@@ -195,13 +205,17 @@ function ChatSidebar({ data, selectedBotId, collapsed, onCollapse, onExpand, onB
   const primaryBot = data.bots[0];
   const primaryVisible = primaryBot ? bots.some((bot) => bot.id === primaryBot.id) : false;
   const restBots = primaryVisible && primaryBot ? bots.filter((bot) => bot.id !== primaryBot.id) : bots;
+  const unreadFor = (botId: string) => {
+    const conversation = data.conversations.find((item) => item.botIds.includes(botId));
+    return conversation ? data.unreadCounts?.[conversation.id] ?? 0 : 0;
+  };
 
   if (collapsed) return (
     <div className="flex min-w-0 flex-1 flex-col">
       <div className="scrollbar-thin flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2 pt-6 pb-3">
-        {primaryVisible && primaryBot ? <RailBot active={selectedBotId === primaryBot.id} bot={primaryBot} onBot={onBot} primary /> : null}
+        {primaryVisible && primaryBot ? <RailBot active={selectedBotId === primaryBot.id} bot={primaryBot} onBot={onBot} primary unread={unreadFor(primaryBot.id)} /> : null}
         {primaryVisible && restBots.length > 0 ? <div aria-hidden="true" className="my-1 h-px w-6 shrink-0 bg-border" /> : null}
-        {restBots.map((bot) => <RailBot active={selectedBotId === bot.id} bot={bot} key={bot.id} onBot={onBot} />)}
+        {restBots.map((bot) => <RailBot active={selectedBotId === bot.id} bot={bot} key={bot.id} onBot={onBot} unread={unreadFor(bot.id)} />)}
       </div>
       <div className="flex flex-col items-center gap-1 p-2">
         <Button aria-label="Expand sidebar" onClick={onExpand} size="icon-lg" title="Expand sidebar" variant="ghost"><SidebarSimpleIcon className="rotate-180" /></Button>
@@ -233,7 +247,9 @@ function ChatSidebar({ data, selectedBotId, collapsed, onCollapse, onExpand, onB
       <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-2 pb-4">
         {bots.map((bot) => {
           const active = selectedBotId === bot.id;
-          const running = data.conversations.some((item) => item.botIds.includes(bot.id) && item.runStatus === "running");
+          const conversation = data.conversations.find((item) => item.botIds.includes(bot.id));
+          const running = conversation?.runStatus === "running";
+          const unread = conversation ? data.unreadCounts?.[conversation.id] ?? 0 : 0;
           return (
             <button
               aria-current={active ? "page" : undefined}
@@ -247,6 +263,7 @@ function ChatSidebar({ data, selectedBotId, collapsed, onCollapse, onExpand, onB
                 <span className="block truncate text-[13px] font-medium">{bot.name}</span>
                 <span className="mt-1 block truncate text-[11px] text-muted-foreground">{running ? "Thinking…" : previewLine(previews.get(bot.id)?.content)}</span>
               </span>
+              {unread > 0 ? <UnreadBadge count={unread} /> : null}
             </button>
           );
         })}
@@ -262,16 +279,32 @@ function ChatSidebar({ data, selectedBotId, collapsed, onCollapse, onExpand, onB
   );
 }
 
-function RailBot({ bot, active, onBot, primary = false }: { bot: Bootstrap["bots"][number]; active: boolean; onBot: (id: string) => void; primary?: boolean }) {
+function RailBot({ bot, active, onBot, primary = false, unread = 0 }: { bot: Bootstrap["bots"][number]; active: boolean; onBot: (id: string) => void; primary?: boolean; unread?: number }) {
   return (
-    <button aria-current={active ? "page" : undefined} aria-label={bot.name} className={`relative grid size-11 shrink-0 place-items-center text-white text-xs font-medium transition-colors ${active ? "ring-1 ring-foreground ring-offset-2 ring-offset-background" : "hover:ring-1 hover:ring-border"}`} onClick={() => onBot(bot.id)} style={{ backgroundColor: bot.color }} title={bot.name} type="button">
+    <button aria-current={active ? "page" : undefined} aria-label={unread > 0 ? `${bot.name}, ${unread} unread` : bot.name} className={`relative grid size-11 shrink-0 place-items-center text-white text-xs font-medium transition-colors ${active ? "ring-1 ring-foreground ring-offset-2 ring-offset-background" : "hover:ring-1 hover:ring-border"}`} onClick={() => onBot(bot.id)} style={{ backgroundColor: bot.color }} title={bot.name} type="button">
       {bot.name.slice(0, 1).toUpperCase()}
+      {unread > 0 ? (
+        <span aria-hidden="true" className="pointer-events-none absolute -top-1 -right-1 grid min-w-4 place-items-center rounded-full bg-foreground px-1 text-[9px] font-medium text-background ring-1 ring-background">
+          {unread > 99 ? "99+" : unread}
+        </span>
+      ) : null}
       {primary ? (
         <span aria-hidden="true" className="pointer-events-none absolute -right-1 -bottom-1 grid size-4 place-items-center rounded-full bg-background text-foreground ring-1 ring-border">
           <StarIcon aria-hidden="true" className="size-2.5" focusable="false" weight="fill" />
         </span>
       ) : null}
     </button>
+  );
+}
+
+function UnreadBadge({ count }: { count: number }) {
+  return (
+    <span
+      aria-label={`${count} unread`}
+      className="ml-auto grid min-w-5 shrink-0 place-items-center rounded-full bg-foreground px-1.5 py-0.5 text-[10px] font-medium text-background"
+    >
+      {count > 99 ? "99+" : count}
+    </span>
   );
 }
 

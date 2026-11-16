@@ -1,5 +1,13 @@
-import { jsonb, pgTable, text, timestamp, integer } from "drizzle-orm/pg-core";
-import type { Bot, Conversation } from "@slopbot/contracts";
+import { jsonb, pgTable, text, timestamp, integer, primaryKey } from "drizzle-orm/pg-core";
+import type {
+  AutomationOccurrenceStatus,
+  AutomationSchedule,
+  AutomationStatus,
+  Bot,
+  Conversation,
+  RunStatus,
+  RunTrigger,
+} from "@slopbot/contracts";
 
 export const bots = pgTable("bots", {
   id: text("id").primaryKey(),
@@ -33,8 +41,21 @@ export const messages = pgTable("messages", {
   content: text("content").notNull(),
   status: text("status").notNull().default("complete"),
   error: text("error"),
+  runId: text("run_id"),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
 });
+
+export const conversationReads = pgTable(
+  "conversation_reads",
+  {
+    userId: text("user_id").notNull(),
+    conversationId: text("conversation_id").notNull(),
+    lastReadAt: timestamp("last_read_at", { withTimezone: true, mode: "string" }).notNull(),
+    lastReadMessageId: text("last_read_message_id"),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.conversationId] })],
+);
 
 export const integrations = pgTable("integrations", {
   id: text("id").primaryKey(),
@@ -68,7 +89,95 @@ export const pendingActions = pgTable("pending_actions", {
   summary: text("summary").notNull(),
   modelMessages: jsonb("model_messages").notNull(),
   status: text("status").notNull().default("pending"),
+  runId: text("run_id"),
+  providerApprovalId: text("provider_approval_id"),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+});
+
+export const runs = pgTable("runs", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  botId: text("bot_id").notNull().default(""),
+  status: text("status").$type<RunStatus>().notNull().default("queued"),
+  trigger: jsonb("trigger").$type<RunTrigger>().notNull(),
+  attempt: integer("attempt").notNull().default(0),
+  fence: integer("fence").notNull().default(0),
+  idempotencyKey: text("idempotency_key"),
+  messageId: text("message_id"),
+  actionId: text("action_id"),
+  workflowRunId: text("workflow_run_id"),
+  outputMessageId: text("output_message_id"),
+  leaseOwner: text("lease_owner"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true, mode: "string" }),
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+});
+
+export const runEvents = pgTable("run_events", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull(),
+  seq: integer("seq").notNull(),
+  type: text("type").notNull(),
+  data: jsonb("data"),
+  dedupeKey: text("dedupe_key"),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+});
+
+export const runTimers = pgTable("run_timers", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  runId: text("run_id").notNull(),
+  kind: text("kind").notNull(),
+  dueAt: timestamp("due_at", { withTimezone: true, mode: "string" }).notNull(),
+  status: text("status").notNull().default("pending"),
+  claimedAt: timestamp("claimed_at", { withTimezone: true, mode: "string" }),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+});
+
+export const runClaims = pgTable(
+  "run_claims",
+  {
+    userId: text("user_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    runId: text("run_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.idempotencyKey] })],
+);
+
+export const automationTasks = pgTable("automation_tasks", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  botId: text("bot_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  title: text("title").notNull(),
+  instructions: text("instructions").notNull(),
+  schedule: jsonb("schedule").$type<AutomationSchedule>().notNull(),
+  status: text("status").$type<AutomationStatus>().notNull().default("active"),
+  nextDueAt: timestamp("next_due_at", { withTimezone: true, mode: "string" }),
+  lastOccurredAt: timestamp("last_occurred_at", { withTimezone: true, mode: "string" }),
+  lastError: text("last_error"),
+  attempts: integer("attempts").notNull().default(0),
+  claimedAt: timestamp("claimed_at", { withTimezone: true, mode: "string" }),
+  revision: integer("revision").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+});
+
+export const automationOccurrences = pgTable("automation_occurrences", {
+  id: text("id").primaryKey(),
+  taskId: text("task_id").notNull(),
+  userId: text("user_id").notNull(),
+  occurrenceAt: timestamp("occurrence_at", { withTimezone: true, mode: "string" }).notNull(),
+  executionId: text("execution_id").notNull(),
+  runId: text("run_id"),
+  workflowRunId: text("workflow_run_id"),
+  status: text("status").$type<AutomationOccurrenceStatus>().notNull().default("queued"),
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
 });
 
 export const desktopJobs = pgTable("desktop_jobs", {

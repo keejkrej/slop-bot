@@ -13,6 +13,8 @@ Capabilities (global connections + native tools)
 
 Bots do not get long-running VMs. A sandbox is created only when a computer tool is invoked, used for a bounded turn, and stopped in `finally`.
 
+Compute is ephemeral; durable state is not. `AppStore.runs` (`RunStore`) is the core record for a unit of work, and the workflow process is replaceable around it. See [always-on.md](./always-on.md) for the proactive model.
+
 ## Compute lifecycle and cost controls
 
 - Use `Sandbox.getOrCreate` only when compute is needed; no sandbox at bot creation.
@@ -27,7 +29,7 @@ Sources: [Persistent sandboxes](https://vercel.com/docs/sandbox/concepts/persist
 
 ## Memory is not the system of record
 
-- **Neon:** bots, conversations, messages, connections, run state, and approvals.
+- **Neon:** bots, conversations, messages, connections, run state (`AppStore.runs`, the core record), and approvals.
 - **Mem0:** preferences and learned context, scoped by `agent_id` to one bot and `app_id` to Slop Bot. `run_id` identifies a reply run when useful.
 - **Drive:** files produced by a bot, only when persistence is required.
 
@@ -53,9 +55,18 @@ Sources: [Parallel Search quickstart](https://docs.parallel.ai/search/search-qui
 
 The desktop renders the same web app. A private endpoint such as `http://127.0.0.1:<port>/mcp` becomes a desktop-pending connection. Electrobun discovers and claims it through the authenticated outbound bridge. Hosted agents receive schemas and invoke tools through Workflow hooks; the hosted API never connects inbound to the laptop's port.
 
+## Proactive work
+
+Scheduled and unattended work reuses the same run and turn path as interactive chat. A bot has one conversation; automations resolve it rather than creating new ones. Durable tasks and occurrences live in the store, and a single protected tick admits due occurrences. Proactive results are quiet by default and surface in the in-app activity view, with no external delivery channel.
+
+See [always-on.md](./always-on.md) for the design and boundaries, and [scheduling.md](./scheduling.md) for the time policy.
+
 ## Safety and durability
 
 - Model and tool work runs in `WorkflowAgent` with explicit step limits.
+- Runs are fenced and exclusive per conversation; a stale writer cannot overwrite newer state.
+- Run timers and `recoverRuns` are a durable recovery layer for approval timeouts, lease expiry, and start handoff. Admission writes the timers and the scheduler tick runs recovery by default.
+- `RunStore.completeWithMessage` writes the bot outbox message and the terminal run state atomically.
 - Email and other consequential writes pause for signed user approval and resume durably.
 - MCP execution is guarded by operation, including every nested `tool_slug` in Composio multi-execute.
 - Sandbox handles and live MCP clients never cross durable-step serialization boundaries.

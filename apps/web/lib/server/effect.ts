@@ -3,6 +3,7 @@ import type { User } from "@slopbot/contracts";
 import { ZodError } from "zod";
 import { getStore } from "@db/store";
 import type { AppStore } from "@db/types";
+import { StoreDomainError } from "@db/types";
 import { requireUser } from "./auth";
 import { ApiError, errorResponse } from "./http";
 import {
@@ -46,6 +47,9 @@ export type AppEffect<A, R = AppServices> = Effect.Effect<A, ApiError, R>;
 
 export function normalizeError(cause: unknown): ApiError {
   if (cause instanceof ApiError) return cause;
+  if (cause instanceof StoreDomainError) {
+    return new ApiError(cause.code === "not_found" ? 404 : 409, cause.message);
+  }
   if (cause instanceof ZodError) return new ApiError(400, cause.issues[0]?.message ?? "Invalid request.");
   if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "23505") {
     return new ApiError(409, "That handle is already in use.");
