@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, KeyboardAvoidingView, Pressable, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { ArrowLeft, ArrowUp, Play, Users } from 'lucide-react-native';
+import { ArrowLeft, ArrowUp } from 'lucide-react-native';
 import type { Bot, ChatMessage, ConversationDetail } from '@slopbot/contracts';
 import { api } from '@/src/lib/api';
 import { useApp } from '@/src/lib/app-state';
@@ -33,7 +33,7 @@ export default function ConversationScreen() {
       setDetail(await api<ConversationDetail>(`/api/conversations/${id}`));
       setError(undefined);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not load room.');
+      setError(cause instanceof Error ? cause.message : 'Could not load chat.');
     }
   }, [id]);
 
@@ -44,7 +44,7 @@ export default function ConversationScreen() {
       setDetail(result);
       setError(undefined);
     }).catch((cause) => {
-      if (active) setError(cause instanceof Error ? cause.message : 'Could not load room.');
+      if (active) setError(cause instanceof Error ? cause.message : 'Could not load chat.');
     });
     return () => { active = false; };
   }, [id]);
@@ -78,18 +78,6 @@ export default function ConversationScreen() {
     }
   }
 
-  async function round() {
-    setBusy(true);
-    try {
-      await api(`/api/conversations/${id}/round`, { method: 'POST' });
-      await load();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Round failed.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function approve(actionId: string, approved: boolean) {
     setBusy(true);
     setError(undefined);
@@ -116,15 +104,12 @@ export default function ConversationScreen() {
           </Pressable>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text className="text-sm font-medium" numberOfLines={1}>
-              {detail?.conversation.title ?? 'Loading room…'}
+              {detail?.conversation.title ?? 'Loading chat…'}
             </Text>
             <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={1}>
               {detail?.conversation.botIds.map((botId) => `@${data?.bots.find((bot) => bot.id === botId)?.handle ?? 'unknown'}`).join(' · ')}
             </Text>
           </View>
-          <Button disabled={busy || running} onPress={() => void round()} size="sm" variant="outline">
-            <Play size={14} /><Text>Round</Text>
-          </Button>
         </View>
 
         {!detail ? (
@@ -142,18 +127,6 @@ export default function ConversationScreen() {
             style={{ flex: 1, width: '100%' }}
             data={detail.messages}
             keyExtractor={(message) => message.id}
-            ListEmptyComponent={
-              <View className="flex-1 items-center justify-center px-6 py-16">
-                <View className="mb-5 h-12 w-12 items-center justify-center bg-muted">
-                  <Users className="text-muted-foreground" size={24} />
-                </View>
-                <Text className="text-xl font-medium tracking-[-0.8px]">The floor is yours.</Text>
-                <Text className="mt-3 max-w-72 text-center text-xs leading-5 text-muted-foreground">
-                  Send a message, or start a round and let every bot respond once.
-                </Text>
-                <Button className="mt-6" disabled={busy} onPress={() => void round()} variant="outline"><Text>Start bot round</Text></Button>
-              </View>
-            }
             ListFooterComponent={<>
               {detail.pendingActions.map((action) => (
                 <View className="border border-border bg-muted p-4" key={action.id}>
@@ -168,7 +141,7 @@ export default function ConversationScreen() {
               {running ? (
                 <View className="flex-row items-center gap-2">
                   <ActivityIndicator size="small" />
-                  <Text className="text-xs text-muted-foreground">Bots are responding in sequence…</Text>
+                  <Text className="text-xs text-muted-foreground">Responding…</Text>
                 </View>
               ) : null}
               {error ? <Text className="text-xs leading-5 text-destructive">{error}</Text> : null}
@@ -185,7 +158,7 @@ export default function ConversationScreen() {
               style={{ flex: 1, minWidth: 0 }}
               editable={!running && !busy}
               onChangeText={setDraft}
-              placeholder={running ? 'Wait for this round…' : 'Message the group…'}
+              placeholder={running ? 'Wait for the reply…' : 'Message the bot…'}
               value={draft}
             />
             <Button
@@ -198,8 +171,7 @@ export default function ConversationScreen() {
               {busy ? <ActivityIndicator color={colors.primaryForeground} /> : <Icon as={ArrowUp} size={18} />}
             </Button>
           </View>
-          <View className="mt-2 flex-row items-center justify-between gap-3">
-            <Text className="text-[10px] uppercase text-muted-foreground">Max 4 bots per round</Text>
+          <View className="mt-2 flex-row items-center justify-end gap-3">
             <Badge variant="secondary"><Text>{running ? 'THINKING' : 'READY'}</Text></Badge>
           </View>
         </View>

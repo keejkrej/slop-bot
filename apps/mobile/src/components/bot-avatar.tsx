@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, type StyleProp, type ViewStyle } from 'react-native';
-import { MAX_GROUP_BOTS, type Bot } from '@slopbot/contracts';
+import type { Bot } from '@slopbot/contracts';
 import { useColorScheme } from 'nativewind';
 import { THEME } from '@/lib/theme';
 import { Text } from '@/components/ui/text';
@@ -25,7 +25,7 @@ export function BotAvatar({ bot, size = 36, style }: { bot?: AvatarBot; size?: n
 export function BotAvatarGroup({ bots, size = 30 }: { bots: AvatarBot[]; size?: number }) {
   const { colorScheme = 'light' } = useColorScheme();
 
-  const width = MAX_GROUP_BOTS * size - (MAX_GROUP_BOTS - 1) * AVATAR_OVERLAP;
+  const width = Math.max(1, bots.length) * size - Math.max(0, bots.length - 1) * AVATAR_OVERLAP;
 
   return (
     <View className="flex-row items-center" style={{ width, height: size }}>

@@ -75,10 +75,20 @@ export class FileStore implements AppStore {
         ],
         conversations: [
           {
-            id: "conv_brain_trust",
+            id: "conv_nova",
             userId: "demo-user",
-            title: "The brain trust",
-            botIds: ["bot_nova", "bot_patch"],
+            title: "Nova",
+            botIds: ["bot_nova"],
+            activeRunId: null,
+            runStatus: "idle",
+            createdAt,
+            updatedAt: createdAt,
+          },
+          {
+            id: "conv_patch",
+            userId: "demo-user",
+            title: "Patch",
+            botIds: ["bot_patch"],
             activeRunId: null,
             runStatus: "idle",
             createdAt,

@@ -17,10 +17,10 @@ async function makeStore() {
 }
 
 describe("FileStore", () => {
-  it("persists owned bots, rooms, messages, and encrypted secrets", async () => {
+  it("persists owned bots, chats, messages, and encrypted secrets", async () => {
     const store = await makeStore();
     const bot = await store.createBot("demo-user", { name: "Test", handle: "test", persona: "A testing bot with clear answers.", model: "openai/test", integrationIds: [] });
-    const conversation = await store.createConversation("demo-user", { title: "Test room", botIds: [bot.id] });
+    const conversation = await store.createConversation("demo-user", { title: "Test chat", botIds: [bot.id] });
     await store.addMessage("demo-user", { conversationId: conversation.id, senderType: "user", senderId: "demo-user", content: "Hello" });
     const integration = await store.createIntegration("demo-user", { kind: "mcp", name: "Notes", url: "https://example.com/mcp", description: "Notes", status: "connected" });
     await store.setSecret("demo-user", integration.id, { tokens: { access_token: "not-plaintext" } });

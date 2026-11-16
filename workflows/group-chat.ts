@@ -32,7 +32,7 @@ export async function runGroupTurn(input: GroupTurnInput): Promise<{ savedMessag
 
   const savedMessageIds: string[] = [];
   try {
-    for (const botId of input.botIds.slice(0, 4)) {
+    for (const botId of input.botIds.slice(0, 1)) {
       const resumeAction = input.resumeActionId && botId === input.resumeActionId ? await loadResumeAction(input.userId, input.conversationId, botId) : null;
       if (input.resumeActionId && !resumeAction) continue;
       const context = resumeAction ?? await loadBotContext(input.userId, input.conversationId, botId);
@@ -66,7 +66,7 @@ export async function runGroupTurn(input: GroupTurnInput): Promise<{ savedMessag
           content = result.text.trim() || "I don't have a useful response yet.";
         }
       } catch (error) {
-        content = "I hit an error while responding. The group can continue, and you can try my turn again.";
+        content = "I hit an error while responding. Send another message or try again.";
         await saveBotMessage(input.userId, input.conversationId, botId, content, "failed", safeError(error));
         continue;
       }
@@ -191,7 +191,7 @@ async function demoBotReply(bot: Bot, messages: ModelMessage[]): Promise<string>
   "use step";
   return runService(Effect.sync(() => {
     const latest = [...messages].reverse().find((message) => message.role === "user");
-    const text = latest ? modelMessageText(latest) : "Introduce yourselves and decide what this group should explore.";
+    const text = latest ? modelMessageText(latest) : "Introduce yourself and invite the user to share what they are working on.";
     const cleaned = text.replace(/^\[.+?\]:\s*/s, "").slice(0, 240);
     if (bot.handle === "nova") return `I like the direction. My read: “${cleaned}” is worth turning into one small experiment. Let's define the user outcome first, then ship the thinnest version that proves it.`;
     if (bot.handle === "patch") return `Building on that: I'd timebox the experiment, add one failure path, and measure whether the outcome actually changed. For “${cleaned}”, the next concrete step is a runnable happy path before expanding scope.`;
@@ -233,7 +233,7 @@ async function recordGroupFailure(userId: string, conversationId: string, error:
       conversationId,
       senderType: "system",
       senderId: "system",
-      content: "The group run stopped unexpectedly. You can retry without losing earlier messages.",
+      content: "The reply stopped unexpectedly. You can retry without losing earlier messages.",
       status: "failed",
       error,
     });
@@ -269,11 +269,11 @@ function makeTools(definitions: LoadedTool[], userId: string): ToolSet {
 
 function instructionsFor(bot: Bot): string {
   return [
-    `You are ${bot.name} (@${bot.handle}), one user-created bot in a group chat.`,
+    `You are ${bot.name} (@${bot.handle}), a user-created bot in a one-to-one chat.`,
     bot.persona,
-    "Other speakers are identified as [Name (@handle)]. Read their messages and respond to the group, not just the latest user.",
+    "Respond directly to the user in your own voice.",
     "Build on or constructively challenge another bot when useful. Never imitate another bot or write messages on its behalf.",
-    "Return exactly one concise message for yourself. Do not ask the group to enter an open-ended discussion loop.",
+    "Return exactly one concise message. Do not invite an open-ended bot-to-bot discussion.",
     "Only read-only MCP tools are available. Never claim a write or external side effect happened unless a tool result proves it.",
   ].join("\n\n");
 }
@@ -281,7 +281,7 @@ function instructionsFor(bot: Bot): string {
 function toModelMessages(history: ChatMessage[], currentBotId: string, bots: Bot[]): ModelMessage[] {
   const relevant = history.filter((message) => message.status === "complete").slice(-40);
   if (relevant.length === 0) {
-    return [{ role: "user", content: "The human opened this group. Introduce yourself briefly and suggest one useful topic for the group." }];
+    return [{ role: "user", content: "The human opened this chat. Introduce yourself briefly and invite them to share what they need help with." }];
   }
   return relevant.map((message) => {
     if (message.senderType === "bot" && message.senderId === currentBotId) {

@@ -12,7 +12,7 @@ export function startGroupRun(userId: string, conversationId: string, options: {
     const conversation = yield* fromPromise(() => store.getConversation(userId, conversationId));
     if (!conversation) return yield* Effect.fail(new ApiError(404, "Conversation not found."));
     if (conversation.activeRunId || conversation.runStatus === "running") {
-      return yield* Effect.fail(new ApiError(409, "This group is already responding. Wait for the round to finish."));
+      return yield* Effect.fail(new ApiError(409, "This chat is already responding. Wait for the reply to finish."));
     }
     yield* fromPromise(() => store.setConversationRun(userId, conversationId, null, "running"));
     return yield* fromPromise(async () => {
