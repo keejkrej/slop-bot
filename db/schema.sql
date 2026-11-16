@@ -141,8 +141,12 @@ alter table desktop_jobs add column if not exists delivery_status text not null 
 alter table desktop_jobs add column if not exists delivery_attempts integer not null default 0;
 alter table desktop_jobs add column if not exists delivery_error text;
 alter table desktop_jobs add column if not exists delivered_at timestamptz;
-create unique index if not exists desktop_jobs_run_step_idx
-  on desktop_jobs(run_id, step_key)
+-- Desktop job idempotency is scoped per user: two users may legitimately use
+-- the same run/step identity. Drop only the legacy global index and replace it
+-- with a user-scoped partial unique index. No table or row is dropped.
+drop index if exists desktop_jobs_run_step_idx;
+create unique index if not exists desktop_jobs_user_run_step_idx
+  on desktop_jobs(user_id, run_id, step_key)
   where run_id is not null and step_key is not null;
 create index if not exists desktop_jobs_lease_idx
   on desktop_jobs(user_id, device_id, status, lease_expires_at);

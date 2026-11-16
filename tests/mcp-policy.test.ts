@@ -196,6 +196,23 @@ describe("MCP result bounding", () => {
     expect(result.ok).toBe("visible");
   });
 
+  it("redacts nested connection URLs, AWS keys, and JWTs in MCP results", () => {
+    const result = boundMcpResult({
+      nested: {
+        dsn: "postgres://admin:s3cret@db.internal/app",
+        aws: "AKIAABCDEFGHIJKLMNOP",
+        jwt: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+        safe: "visible",
+      },
+    }) as Record<string, unknown>;
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("s3cret");
+    expect(serialized).not.toContain("AKIAABCDEFGHIJKLMNOP");
+    expect(serialized).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+    expect((result.nested as Record<string, unknown>).safe).toBe("visible");
+    expect(serialized).toContain("[REDACTED]");
+  });
+
   it("leaves small results intact", () => {
     expect(boundMcpResult({ ok: true, value: 3 })).toEqual({ ok: true, value: 3 });
   });

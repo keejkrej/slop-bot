@@ -67,6 +67,7 @@ async function awaitingApproval(store: FileStore) {
     summary: "memory_delete notes/example.md",
     modelMessages: [],
     runId: run.id,
+    providerApprovalId: "provider-approval-1",
   });
   const waiting = await store.runs.transitionRun({
     userId: "demo-user",
@@ -83,7 +84,7 @@ async function awaitingApproval(store: FileStore) {
 
 async function queuedApprovalRun(
   store: FileStore,
-  options: { expiresAt?: string; now?: string } = {},
+  options: { expiresAt?: string; now?: string; providerApprovalId?: string | null } = {},
 ) {
   const { conversation, run } = await runningRun(store, "2026-01-01T00:05:00.000Z");
   const action = await store.createPendingAction({
@@ -95,6 +96,7 @@ async function queuedApprovalRun(
     modelMessages: [],
     runId: run.id,
     expiresAt: options.expiresAt ?? "2026-01-01T00:05:00.000Z",
+    providerApprovalId: options.providerApprovalId ?? null,
   });
   const waiting = await store.runs.transitionRun({
     userId: "demo-user",
@@ -383,6 +385,94 @@ describe("recoverRuns", () => {
       ),
     ).toBe(true);
     expect(await store.runs.claimDueTimers({ now: "2026-01-01T00:07:00.000Z" })).toHaveLength(0);
+  });
+
+  it("expires a queued approval handoff whose provider approval id is null", async () => {
+    const store = await makeStore();
+    const { conversation, run, action } = await queuedApprovalRun(store, {
+      expiresAt: "2026-01-02T00:00:00.000Z",
+      providerApprovalId: null,
+    });
+    const startRun = vi.fn();
+
+    const result = await recoverRuns({
+      store,
+      now: new Date("2026-01-01T00:06:00.000Z"),
+      startRun,
+    });
+
+    expect(startRun).not.toHaveBeenCalled();
+    expect(result.approvalExpired).toBe(1);
+    const expired = await store.runs.getRun("demo-user", run.id);
+    expect(expired?.status).toBe("expired");
+    expect(expired?.leaseOwner).toBeNull();
+    expect(expired?.leaseExpiresAt).toBeNull();
+    expect((await store.getPendingAction("demo-user", action.id))?.status).toBe("expired");
+    const projected = await store.getConversation("demo-user", conversation.id);
+    expect(projected?.runStatus).toBe("idle");
+    expect(projected?.activeRunId).toBeNull();
+    const events = await store.runs.listEvents("demo-user", run.id);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "expired" &&
+          (event.data as { reason?: string } | null)?.reason === "provider_approval_id_required",
+      ),
+    ).toBe(true);
+    expect(await store.runs.claimDueTimers({ now: "2026-01-01T00:07:00.000Z" })).toHaveLength(0);
+  });
+
+  it("expires a queued approval handoff whose provider approval id is absent", async () => {
+    const store = await makeStore();
+    const { run, action } = await queuedApprovalRun(store, {
+      expiresAt: "2026-01-02T00:00:00.000Z",
+    });
+    const startRun = vi.fn();
+
+    const result = await recoverRuns({
+      store,
+      now: new Date("2026-01-01T00:06:00.000Z"),
+      startRun,
+    });
+
+    expect(startRun).not.toHaveBeenCalled();
+    expect(result.approvalExpired).toBe(1);
+    expect((await store.runs.getRun("demo-user", run.id))?.status).toBe("expired");
+    expect((await store.getPendingAction("demo-user", action.id))?.status).toBe("expired");
+  });
+
+  it("resumes a non-expired approval handoff with a provider approval id", async () => {
+    const store = await makeStore();
+    const { run, action } = await queuedApprovalRun(store, {
+      expiresAt: "2026-01-02T00:00:00.000Z",
+      providerApprovalId: "provider-approval-1",
+    });
+    const startRun = vi.fn(async (candidate: Run, resumeAction: PendingAction | null) => {
+      expect(resumeAction?.providerApprovalId).toBe("provider-approval-1");
+      const applied = await store.runs.transitionRun({
+        userId: candidate.userId,
+        runId: candidate.id,
+        expectedStatus: "queued",
+        expectedFence: candidate.fence,
+        status: "running",
+        workflowRunId: "wf_resumed",
+        leaseOwner: "wf_resumed",
+        leaseExpiresAt: "2026-01-01T00:10:00.000Z",
+      });
+      if (applied.outcome !== "applied") throw new Error("stale");
+      return { runId: applied.run.id, status: applied.run.status, message: null, action: resumeAction };
+    });
+
+    const result = await recoverRuns({
+      store,
+      now: new Date("2026-01-01T00:06:00.000Z"),
+      startRun,
+    });
+
+    expect(result.handoffRetried).toBe(1);
+    expect(startRun).toHaveBeenCalledTimes(1);
+    expect((await store.runs.getRun("demo-user", run.id))?.status).toBe("running");
+    expect((await store.getPendingAction("demo-user", action.id))?.status).toBe("resuming");
   });
 
   it("does not start a queued approval handoff whose action already completed", async () => {

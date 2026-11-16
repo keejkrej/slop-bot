@@ -40,6 +40,42 @@ describe("tool risk classification", () => {
     expect(classifyToolRisk({ name: "GITHUB_LIST_AND_DELETE_REPO", readOnlyHint: true })).toBe("destructive");
   });
 
+  it("treats a read verb before a compound write as a write", () => {
+    expect(classifyToolRisk({ name: "GITHUB_LIST_AND_CREATE_ISSUE" })).toBe("write");
+    expect(classifyToolRisk({ name: "GITHUB_LIST_AND_CREATE_ISSUE", readOnlyHint: true })).toBe("write");
+    expect(classifyToolRisk({ name: "GITHUB_LIST_AND_CREATE_ISSUE", readOnly: true })).toBe("write");
+    expect(classifyToolRisk({ name: "GITHUB_LIST_AND_CREATE" })).toBe("write");
+    expect(classifyToolRisk({ name: "GITHUB_GET_AND_ARCHIVE" })).toBe("destructive");
+  });
+
+  it("keeps destructive compound terms ahead of read verbs", () => {
+    expect(classifyToolRisk({ name: "GITHUB_LIST_AND_DELETE" })).toBe("destructive");
+    expect(classifyToolRisk({ name: "GITHUB_LIST_AND_ARCHIVE" })).toBe("destructive");
+    expect(classifyToolRisk({ name: "GITHUB_LIST_AND_DELETE", readOnlyHint: true })).toBe("destructive");
+    expect(classifyToolRisk({ name: "GITHUB_LIST_AND_ARCHIVE", readOnly: true })).toBe("destructive");
+  });
+
+  it("keeps genuinely pure read names as reads", () => {
+    for (const name of ["GITHUB_GET", "GITHUB_LIST", "GITHUB_READ"]) {
+      expect(classifyToolRisk({ name })).toBe("read");
+      expect(classifyToolRisk({ name, readOnlyHint: true })).toBe("read");
+      expect(classifyToolRisk({ name, readOnly: true })).toBe("read");
+    }
+  });
+
+  it("keeps pure read operations safe", () => {
+    for (const name of ["GITHUB_READ_FILE", "GITHUB_LIST_REPOSITORIES", "GITHUB_GET_ISSUE_COMMENT"]) {
+      expect(classifyToolRisk({ name })).toBe("read");
+      expect(classifyToolRisk({ name, readOnly: true })).toBe("read");
+    }
+  });
+
+  it("only lets the legacy read flag confirm a true simple read", () => {
+    expect(classifyToolRisk({ name: "GITHUB_CREATE_ISSUE", readOnly: true })).toBe("write");
+    expect(classifyToolRisk({ name: "SOME_OPAQUE_OPERATION", readOnly: true })).toBe("write");
+    expect(classifyToolRisk({ name: "GITHUB_GET_REPOSITORY", readOnly: true })).toBe("read");
+  });
+
   it("never treats Composio executors as reads", () => {
     expect(classifyToolRisk({ name: "COMPOSIO_EXECUTE_TOOL", readOnlyHint: true })).toBe("write");
     expect(classifyToolRisk({ name: "COMPOSIO_MULTI_EXECUTE_TOOL" })).toBe("write");
@@ -108,6 +144,52 @@ describe("tool argument redaction", () => {
     expect((redacted.nested as Record<string, unknown>).ok).toBe("visible");
     expect(redacted.token).toBe("[REDACTED]");
     expect(redacted.note).toBe("hello");
+  });
+
+  it("redacts high-confidence secrets in nested approval arguments", () => {
+    const redacted = redactToolArgs({
+      note: "connect with postgres://admin:s3cret@db.internal/app",
+      harmless: {
+        aws: "AKIAABCDEFGHIJKLMNOP",
+        jwt: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+        bearer: "Bearer abcdefghijklmnop",
+      },
+      assignment: "password=hunter2",
+    });
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain("s3cret");
+    expect(serialized).not.toContain("AKIAABCDEFGHIJKLMNOP");
+    expect(serialized).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+    expect(serialized).not.toContain("abcdefghijklmnop");
+    expect(serialized).not.toContain("hunter2");
+    expect(serialized).toContain("[REDACTED]");
+  });
+
+  it("redacts connection URLs, AWS keys, JWTs, and session secrets in field strings", () => {
+    const seeds = [
+      "postgres://u:secret@host/db",
+      "mysql://x:y@host",
+      "AKIA1234567890123456",
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc123def456",
+      "Bearer abcdefghijklmnop",
+      "session_id=abc123def456ghi789",
+    ];
+    const redacted = redactToolArgs({ note: seeds.join(" | ") });
+    const serialized = JSON.stringify(redacted);
+    for (const seed of seeds) {
+      expect(serialized).not.toContain(seed);
+    }
+    expect(serialized).not.toContain("secret");
+    expect(serialized).not.toContain("AKIA1234567890123456");
+    expect(serialized).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+    expect(serialized).not.toContain("abcdefghijklmnop");
+    expect(serialized).not.toContain("abc123def456ghi789");
+    expect(serialized).toContain("[REDACTED]");
+  });
+
+  it("leaves a normal queryless URI readable", () => {
+    const uri = "https://api.github.com/repos/octocat/hello-world";
+    expect(redactToolArgs({ note: uri }).note).toBe(uri);
   });
 
   it("bounds depth, collection sizes, and preview length", () => {

@@ -106,6 +106,50 @@ describe("run telemetry envelope", () => {
     expect(JSON.stringify(sanitized)).toContain("[Truncated: max depth]");
   });
 
+  it("redacts high-confidence secrets in nested trace payloads", () => {
+    const sanitized = sanitizeTraceData({
+      nested: {
+        dsn: "mysql://root:s3cret@db.internal/app",
+        aws: "AKIAABCDEFGHIJKLMNOP",
+        jwt: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+        safe: "visible",
+      },
+    }) as Record<string, unknown>;
+    const serialized = JSON.stringify(sanitized);
+    expect(serialized).not.toContain("s3cret");
+    expect(serialized).not.toContain("AKIAABCDEFGHIJKLMNOP");
+    expect(serialized).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+    expect((sanitized.nested as Record<string, unknown>).safe).toBe("visible");
+    expect(serialized).toContain("[REDACTED]");
+  });
+
+  it("redacts connection URLs, AWS keys, JWTs, and session secrets in trace payloads", () => {
+    const seeds = [
+      "postgres://u:secret@host/db",
+      "mysql://x:y@host",
+      "AKIA1234567890123456",
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc123def456",
+      "Bearer abcdefghijklmnop",
+      "session_id=abc123def456ghi789",
+    ];
+    const sanitized = sanitizeTraceData({ note: seeds.join(" | ") }) as Record<string, unknown>;
+    const serialized = JSON.stringify(sanitized);
+    for (const seed of seeds) {
+      expect(serialized).not.toContain(seed);
+    }
+    expect(serialized).not.toContain("secret");
+    expect(serialized).not.toContain("AKIA1234567890123456");
+    expect(serialized).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+    expect(serialized).not.toContain("abcdefghijklmnop");
+    expect(serialized).not.toContain("abc123def456ghi789");
+    expect(serialized).toContain("[REDACTED]");
+  });
+
+  it("leaves a normal queryless URI readable in trace payloads", () => {
+    const uri = "https://api.github.com/repos/octocat/hello-world";
+    expect(sanitizeTraceData({ note: uri })).toEqual({ note: uri });
+  });
+
   it("builds a typed event and a natural dedupe key", () => {
     const built = buildTraceEvent(traceToolStart({ toolName: "web_search", toolCallId: "call_1" }));
     expect(built?.type).toBe("trace.tool.start");

@@ -10,6 +10,7 @@ const url = process.env.TEST_DATABASE_URL;
 
 describe.skipIf(!url)("PostgresStore desktop jobs (integration)", () => {
   const userId = `test-user-${randomUUID()}`;
+  const otherUserId = `test-user-${randomUUID()}`;
   let store!: import("../db/postgres-store").PostgresStore;
   let sql: import("postgres").Sql | undefined;
 
@@ -23,7 +24,7 @@ describe.skipIf(!url)("PostgresStore desktop jobs (integration)", () => {
 
   afterAll(async () => {
     if (sql) {
-      await sql`delete from desktop_jobs where user_id = ${userId}`;
+      await sql`delete from desktop_jobs where user_id in (${userId}, ${otherUserId})`;
       await sql.end();
     }
     const client = (store as unknown as { client?: { end(): Promise<void> } } | undefined)?.client;
@@ -42,6 +43,29 @@ describe.skipIf(!url)("PostgresStore desktop jobs (integration)", () => {
     const first = await store.createDesktopJob({ ...baseJob, runId: "run-1", stepKey: "wf:step" });
     const second = await store.createDesktopJob({ ...baseJob, runId: "run-1", stepKey: "wf:step" });
     expect(second.id).toBe(first.id);
+  });
+
+  it("scopes the run/step identity per user", async () => {
+    const first = await store.createDesktopJob({ ...baseJob, runId: "run-shared", stepKey: "wf:step" });
+    const second = await store.createDesktopJob({
+      ...baseJob,
+      userId: otherUserId,
+      runId: "run-shared",
+      stepKey: "wf:step",
+    });
+    expect(second.id).not.toBe(first.id);
+    expect(second.userId).toBe(otherUserId);
+
+    const rows = await sql!`
+      select user_id, count(*)::int as count
+      from desktop_jobs
+      where run_id = 'run-shared' and step_key = 'wf:step'
+      group by user_id
+      order by user_id
+    `;
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.count === 1)).toBe(true);
+    expect(new Set(rows.map((row) => row.user_id))).toEqual(new Set([userId, otherUserId]));
   });
 
   it("accepts only one concurrent claim", async () => {

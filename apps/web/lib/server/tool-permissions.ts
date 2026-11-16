@@ -4,6 +4,9 @@ import {
   type ToolRisk,
 } from "@slopbot/contracts";
 import { canonicalArgsDigest } from "./portable-hash";
+import { redactSensitiveText } from "./portable-redact";
+
+export { redactSensitiveText } from "./portable-redact";
 
 /**
  * Pure tool-approval policy. This module deliberately has no store, network,
@@ -23,6 +26,14 @@ const DESTRUCTIVE_VERBS =
   /(?:^|_)(?:DELETE|REMOVE|DESTROY|DROP|PURGE|REVOKE|TRUNCATE|WIPE|UNINSTALL|DISCONNECT|CANCEL|CLOSE|ARCHIVE)(?:_|$)/i;
 const WRITE_VERBS =
   /(?:^|_)(?:CREATE|UPDATE|SEND|POST|PUT|PATCH|WRITE|EDIT|ADD|INSERT|UPLOAD|SET|MOVE|RENAME|MERGE|COMMENT|REPLY|INVITE|ASSIGN|LABEL|REOPEN|PUBLISH|SCHEDULE|TRIGGER|RUN|EXECUTE|DELETE|REMOVE)(?:_|$)/i;
+/**
+ * Compound names join operations with `_AND_`. A read verb before the join
+ * (for example `GITHUB_LIST_AND_CREATE_ISSUE`) must not hide the write that
+ * follows it. This is deliberately narrower than "any name with both verbs" so
+ * a pure read whose noun looks like a verb (`GITHUB_GET_ISSUE_COMMENT`) stays a
+ * read.
+ */
+const COMPOUND_AND = /_AND_/i;
 
 export const COMPOSIO_EXECUTE_TOOL = "COMPOSIO_EXECUTE_TOOL";
 export const COMPOSIO_MULTI_EXECUTE_TOOL = "COMPOSIO_MULTI_EXECUTE_TOOL";
@@ -78,10 +89,21 @@ export function classifyToolRisk(input: ToolRiskInput): ToolRisk {
   // A destructive verb in a compound name (for example
   // `GITHUB_LIST_AND_DELETE_REPO`) wins over a read-looking annotation or verb.
   if (DESTRUCTIVE_VERBS.test(name)) return "destructive";
+
+  const hasReadVerb = READ_VERBS.test(name);
+  const hasWriteVerb = WRITE_VERBS.test(name);
+
+  // A compound name that mixes a read verb with a write verb is a write, even
+  // when the read verb appears first or an untrusted read-only annotation is
+  // set. Pure reads (only read verbs) are unaffected.
+  if (COMPOUND_AND.test(name) && hasWriteVerb) return "write";
+
   if (input.readOnlyHint === true) return "read";
-  if (input.readOnly === true) return "read";
-  if (READ_VERBS.test(name)) return "read";
-  if (WRITE_VERBS.test(name)) return "write";
+  // The legacy normalized flag is weaker than the MCP annotation: it may only
+  // confirm a true simple read (a read verb and no write/destructive verb).
+  if (input.readOnly === true && hasReadVerb && !hasWriteVerb) return "read";
+  if (hasReadVerb) return "read";
+  if (hasWriteVerb) return "write";
   return "write";
 }
 
@@ -221,18 +243,11 @@ const MAX_PREVIEW_CHARS = 400;
 
 const SENSITIVE_KEY =
   /(?:api[_-]?key|secret|token|password|passwd|authorization|(?:^|[_-])auth(?:$|[_-])|cookie|credential|private[_-]?key|access[_-]?key|client[_-]?secret|session[_-]?id|refresh[_-]?token)/i;
-const SENSITIVE_VALUE =
-  /^(?:Bearer|Basic)\s+\S+$|^(?:sk|pk|ghp|gho|ghs|xox[baprs])[-_][A-Za-z0-9_-]{8,}$|^[A-Za-z0-9+/_-]{40,}={0,2}$/;
 
 /**
- * Shared, pure value-level redaction. Both approval previews and untrusted MCP
- * results use this so a secret-looking string is never persisted or returned
- * just because its key looked harmless.
+ * Key- and value-aware redaction. Values use the shared portable text helper so
+ * approval previews and untrusted MCP results agree on what looks secret.
  */
-export function redactSensitiveText(value: string): string {
-  return SENSITIVE_VALUE.test(value) ? "[REDACTED]" : value;
-}
-
 function redactValue(value: unknown, depth: number): unknown {
   if (depth > MAX_REDACT_DEPTH) return "[Truncated: max depth]";
   if (typeof value === "string") {

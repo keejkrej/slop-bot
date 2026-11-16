@@ -419,6 +419,12 @@ export class PostgresStore implements AppStore {
   }
 
   async createDesktopJob(input: NewDesktopJob): Promise<DesktopJob> {
+    // Deliberately targetless DO NOTHING: the insert may conflict on the
+    // primary key (id) or on the user-scoped (user_id, run_id, step_key)
+    // partial unique index. The fallback below is always scoped to the caller's
+    // user, so a colliding identity owned by another user is rejected instead
+    // of being returned. Do not infer the old global (run_id, step_key)
+    // constraint; it no longer exists.
     const [row] = await this.db.insert(desktopJobs).values({
       userId: input.userId,
       deviceId: input.deviceId,

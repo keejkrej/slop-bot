@@ -247,8 +247,8 @@ export const desktopJobs = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex("desktop_jobs_run_step_idx")
-      .on(table.runId, table.stepKey)
+    uniqueIndex("desktop_jobs_user_run_step_idx")
+      .on(table.userId, table.runId, table.stepKey)
       .where(sql`${table.runId} is not null and ${table.stepKey} is not null`),
   ],
 );

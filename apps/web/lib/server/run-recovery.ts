@@ -402,15 +402,27 @@ async function handleStartHandoff(input: {
   }
 
   const action = run.actionId ? await store.getPendingAction(run.userId, run.actionId) : null;
-  const resumable =
+  const actionLive =
     action !== null &&
     (action.status === "pending" || action.status === "resuming") &&
     !isPendingActionExpired(action, now);
+  // A provider approval id is the signature the resumed workflow needs. Without
+  // it the handoff must not start a fresh workflow with no approval context.
+  const hasProviderApproval =
+    typeof action?.providerApprovalId === "string" && action.providerApprovalId.length > 0;
+  const resumable = actionLive && hasProviderApproval;
   if (isApprovalResume(run) && !resumable) {
-    // An approval-resume handoff whose action is missing, terminal, or past its
-    // deadline must never start a fresh workflow without provider approval
-    // context. Expire the queued run instead of resurrecting it.
-    await expireUnresumableHandoff({ store, run, action, result });
+    // An approval-resume handoff whose action is missing, terminal, past its
+    // deadline, or missing its provider approval id must never start a fresh
+    // workflow without provider approval context. Expire the queued run
+    // instead of resurrecting it.
+    await expireUnresumableHandoff({
+      store,
+      run,
+      action,
+      result,
+      reason: actionLive && !hasProviderApproval ? "provider_approval_id_required" : "approval_unresumable",
+    });
     return;
   }
   const started = await startRun(run, resumable ? action : null);
@@ -428,8 +440,9 @@ async function expireUnresumableHandoff(input: {
   run: Run;
   action: PendingAction | null;
   result: RecoverRunsResult;
+  reason: "approval_unresumable" | "provider_approval_id_required";
 }): Promise<void> {
-  const { store, run, action, result } = input;
+  const { store, run, action, result, reason } = input;
   const related =
     action && (action.status === "pending" || action.status === "resuming") ? action : null;
   const transition = await store.runs.transitionRun({
@@ -438,13 +451,16 @@ async function expireUnresumableHandoff(input: {
     expectedStatus: "queued",
     expectedFence: run.fence,
     status: "expired",
-    error: "Approval is no longer resumable.",
+    error:
+      reason === "provider_approval_id_required"
+        ? "Approval is missing a provider approval id."
+        : "Approval is no longer resumable.",
     leaseOwner: null,
     leaseExpiresAt: null,
     action: related ? { id: related.id, status: "expired" } : undefined,
     event: {
       type: "expired",
-      data: { reason: "approval_unresumable", actionId: action?.id ?? null },
+      data: { reason, actionId: action?.id ?? null },
       dedupeKey: `expired:${run.id}`,
     },
     timers: [

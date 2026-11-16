@@ -16,7 +16,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Integration, ToolRisk } from "@slopbot/contracts";
 import { getStore } from "@db/store";
 import { appUrl, ApiError } from "./http";
-import { classifyToolRisk, redactSensitiveText } from "./tool-permissions";
+import { classifyToolRisk } from "./tool-permissions";
+import { redactSensitiveText } from "./portable-redact";
 
 export type IntegrationSecret = {
   tokens?: OAuthTokens;

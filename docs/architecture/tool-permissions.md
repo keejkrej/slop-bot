@@ -11,15 +11,23 @@ by `tests/tool-permissions.test.ts` and `tests/gated-tools.test.ts`.
 
 1. Composio executors and connection management are always `write`.
 2. An explicit `destructiveHint: true` is `destructive`.
-3. An explicit `readOnlyHint: true` (or the legacy normalized `readOnly` flag)
-   is `read`.
-4. Destructive verbs in the name are `destructive`.
-5. Read verbs in the name are `read`.
-6. Write verbs in the name are `write`.
-7. Everything else defaults to `write`.
+3. Destructive verbs in the name are `destructive`.
+4. A compound name that joins a read verb to a write verb with `_AND_` (for
+   example `GITHUB_LIST_AND_CREATE_ISSUE`) is `write`, even when the read verb
+   appears first or a read-only annotation is set.
+5. An explicit `readOnlyHint: true` is `read` for simple names.
+6. The legacy normalized `readOnly` flag is `read` only for a true simple read
+   (a read verb and no write or destructive verb).
+7. Read verbs in the name are `read`.
+8. Write verbs in the name are `write`.
+9. Everything else defaults to `write`.
 
 A read verb in a tool name or a `readOnlyHint` annotation is a hint, not a
 security boundary. Unknown tools stay denied until an explicit grant exists.
+Compound write names are never downgraded by an annotation, and the legacy
+`readOnly` flag cannot turn a write name into a read. A compound write that is
+grantable through the allowlist is still denied when it appears as a nested
+Composio slug, because nested execution only permits reads.
 
 ## Per-connection write allowlist
 

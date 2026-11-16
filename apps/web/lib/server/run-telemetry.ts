@@ -10,6 +10,7 @@
 
 import type { RunEvent } from "@slopbot/contracts";
 import type { AppStore } from "@db/types";
+import { redactSensitiveText } from "./portable-redact";
 
 export const TRACE_EVENT_PREFIX = "trace.";
 
@@ -89,26 +90,9 @@ const ERROR_KINDS = new Set<TraceErrorKind>([
 const SENSITIVE_KEY =
   /(?:api[_-]?key|secret|token|password|passwd|authorization|(?:^|[_-])auth(?:$|[_-])|cookie|credential|private[_-]?key|access[_-]?key|client[_-]?secret|session[_-]?id|refresh[_-]?token|prompt|messages|content|body|args|input|output|result)/i;
 
-const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
-  /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\bBearer\s+[A-Za-z0-9\-._~+/]{20,}=*/g,
-  /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^\s:@/]+:[^\s@/]+@/gi,
-  /\b[A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSWD|ACCESS_KEY|PRIVATE_KEY|CLIENT_SECRET)[A-Z0-9_]*\s*[:=]\s*["']?[A-Za-z0-9_\-./+=]{16,}/g,
-  /\b(?:oauth|access|refresh)[_-]?token\s*[:=]\s*["']?[A-Za-z0-9\-._~+/]{20,}/gi,
-  /\bsk-[A-Za-z0-9_-]{16,}\b/g,
-  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
-];
-
 /** Redact high-confidence secret shapes and bound the result. */
 export function redactTraceText(value: string): string {
-  let text = value;
-  for (const pattern of SECRET_PATTERNS) {
-    text = text.replace(pattern, "[REDACTED]");
-  }
-  return text.slice(0, MAX_STRING);
+  return redactSensitiveText(value).slice(0, MAX_STRING);
 }
 
 /**
