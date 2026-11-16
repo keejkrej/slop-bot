@@ -1,0 +1,20 @@
+{
+  "name": "memory delete approval resumes and completes",
+  "trigger": "approval",
+  "model": "test/model",
+  "resume": true,
+  "result": {
+    "text": "Deleted notes/example.md.",
+    "content": [{ "type": "text", "text": "Deleted notes/example.md." }],
+    "responseMessages": [{ "role": "assistant", "content": "Deleted notes/example.md." }],
+    "totalUsage": { "inputTokens": 30, "outputTokens": 6, "totalTokens": 36 }
+  },
+  "expected": {
+    "decision": "reply",
+    "runStatus": "succeeded",
+    "messageCount": 1,
+    "messageContent": "Deleted notes/example.md.",
+    "traceTypes": ["trace.run.start", "trace.approval.end", "trace.model.end", "trace.run.end"],
+    "usage": { "inputTokens": 30, "outputTokens": 6, "totalTokens": 36 }
+  }
+}

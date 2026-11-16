@@ -20,6 +20,12 @@ export function POST(request: Request): Promise<Response> {
     if (Boolean(input.headerName) !== Boolean(input.headerValue)) {
       return yield* Effect.fail(new ApiError(400, "Provide both a header name and value, or leave both empty."));
     }
+    if (input.allowedWriteTools.length > 0) {
+      return yield* Effect.fail(new ApiError(
+        400,
+        "Write tools cannot be granted at creation. Create the connection, list its tools, then grant writes through /api/integrations/{id}/policy.",
+      ));
+    }
     const local = isLocalMcpUrl(input.url);
     const url = local ? input.url : yield* fromPromise(() => validateMcpUrl(input.url!));
     const secret: IntegrationSecret = input.headerName && input.headerValue

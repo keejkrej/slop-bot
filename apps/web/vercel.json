@@ -1,8 +1,10 @@
 {
-  "crons": [
-    {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "schedules": {
+    "proactive-tick": {
+      "schedule": "*/15 * * * *",
       "path": "/api/cron/tick",
-      "schedule": "*/15 * * * *"
+      "requestMethod": "POST"
     }
-  ]
+  }
 }

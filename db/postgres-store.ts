@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, lte, or, sql, type SQL } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import type { PgTransaction } from "drizzle-orm/pg-core";
 import postgres from "postgres";
@@ -20,6 +20,7 @@ import {
   type User,
 } from "@slopbot/contracts";
 import { decryptSecret, encryptSecret } from "./crypto";
+import { defaultApprovalExpiresAt, isPendingActionExpired } from "../apps/web/lib/server/tool-permissions";
 import {
   automationOccurrences,
   automationTasks,
@@ -28,6 +29,7 @@ import {
   conversations,
   desktopJobs,
   integrations,
+  memoryFiles,
   messages,
   oauthStates,
   pendingActions,
@@ -50,6 +52,7 @@ import {
   type AutomationTask,
   type AutomationTaskPatch,
   type ClaimApprovalRunInput,
+  type ClaimDesktopJobInput,
   type ClaimDueAutomationTasksInput,
   type ClaimMessageRunInput,
   type ClaimRunInput,
@@ -59,6 +62,7 @@ import {
   type CompleteRunWithMessageInput,
   type CompleteRunWithMessageResult,
   type DesktopJob,
+  type DesktopJobDelivery,
   type ListRunsInput,
   type NewAutomationTask,
   type NewDesktopJob,
@@ -68,6 +72,8 @@ import {
   type OAuthState,
   type PendingAction,
   type ListRecoverableRunsInput,
+  type MemoryScope,
+  type MemoryStore,
   type ReadStateStore,
   type ReleaseRunTimerInput,
   type RunStore,
@@ -76,6 +82,11 @@ import {
   StoreDomainError,
 } from "./types";
 import type { IntegrationSecret } from "../apps/web/lib/server/mcp";
+import {
+  MemoryConflictError,
+  type MemoryFile,
+  type MemoryWritePlan,
+} from "../apps/web/lib/server/memory-files";
 
 
 const iso = (value: string) => new Date(value).toISOString();
@@ -127,6 +138,13 @@ export class PostgresStore implements AppStore {
     getUnreadCounts: (userId) => this.getUnreadCounts(userId),
   };
 
+  readonly memory: MemoryStore = {
+    list: (scope) => this.listMemory(scope),
+    read: (scope, path) => this.readMemory(scope, path),
+    apply: (scope, plan) => this.applyMemory(scope, plan),
+    delete: (scope, paths) => this.deleteMemory(scope, paths),
+  };
+
   constructor(url: string) {
     this.client = postgres(url, { max: 5, prepare: false });
     this.db = drizzle(this.client);
@@ -154,7 +172,14 @@ export class PostgresStore implements AppStore {
   }
 
   async deleteBot(userId: string, botId: string): Promise<void> {
-    await this.db.delete(bots).where(and(eq(bots.userId, userId), eq(bots.id, botId)));
+    await this.db.transaction(async (tx) => {
+      // Remove this bot's scoped memory so it cannot outlive the bot. Global
+      // instructions (empty bot_id) and other bots' scopes are preserved.
+      if (botId) {
+        await tx.delete(memoryFiles).where(and(eq(memoryFiles.userId, userId), eq(memoryFiles.botId, botId)));
+      }
+      await tx.delete(bots).where(and(eq(bots.userId, userId), eq(bots.id, botId)));
+    });
   }
 
   async listConversations(userId: string): Promise<Conversation[]> {
@@ -277,7 +302,9 @@ export class PostgresStore implements AppStore {
         target: [conversationReads.userId, conversationReads.conversationId],
         set: { lastReadAt: targetAt, lastReadMessageId: targetId, updatedAt },
         // Forward-only even under concurrent writers, using the same total order.
-        setWhere: sql`(${conversationReads.lastReadAt}, coalesce(${conversationReads.lastReadMessageId}, '')) < (${targetAt}::timestamptz, ${targetId ?? ""}::text)`,
+        // Timestamps transported as JS ISO strings are UTC millisecond precision,
+        // so truncate the stored value to milliseconds before comparing.
+        setWhere: sql`(date_trunc('milliseconds', ${conversationReads.lastReadAt}), coalesce(${conversationReads.lastReadMessageId}, '')) < (date_trunc('milliseconds', ${targetAt}::timestamptz), ${targetId ?? ""}::text)`,
       });
 
       const [saved] = await tx.select().from(conversationReads)
@@ -314,7 +341,9 @@ export class PostgresStore implements AppStore {
         eq(messages.senderType, "bot"),
         or(
           isNull(conversationReads.lastReadAt),
-          sql`(${messages.createdAt}, ${messages.id}) > (${conversationReads.lastReadAt}, coalesce(${conversationReads.lastReadMessageId}, ''))`,
+          // Compare at the same UTC-millisecond precision used for the persisted
+          // bookmark (JS ISO strings), so a just-read message is never counted.
+          sql`(date_trunc('milliseconds', ${messages.createdAt}), ${messages.id}) > (date_trunc('milliseconds', ${conversationReads.lastReadAt}), coalesce(${conversationReads.lastReadMessageId}, ''))`,
         ),
       ))
       .groupBy(messages.conversationId);
@@ -344,6 +373,7 @@ export class PostgresStore implements AppStore {
       userId,
       toolCount: input.toolCount ?? 0,
       lastError: input.lastError ?? null,
+      allowedWriteTools: input.allowedWriteTools ?? [],
     }).returning();
     if (!row) throw new Error("Could not create connection.");
     return toIntegration(row);
@@ -389,9 +419,31 @@ export class PostgresStore implements AppStore {
   }
 
   async createDesktopJob(input: NewDesktopJob): Promise<DesktopJob> {
-    const [row] = await this.db.insert(desktopJobs).values({ ...input, id: `desktop_job_${crypto.randomUUID()}` }).returning();
-    if (!row) throw new Error("Could not create desktop tool job.");
-    return toDesktopJob(row);
+    const [row] = await this.db.insert(desktopJobs).values({
+      userId: input.userId,
+      deviceId: input.deviceId,
+      integrationId: input.integrationId,
+      toolName: input.toolName,
+      args: input.args,
+      id: input.id ?? `desktop_job_${crypto.randomUUID()}`,
+      runId: input.runId ?? null,
+      stepKey: input.stepKey ?? null,
+      attempt: input.attempt ?? null,
+    }).onConflictDoNothing().returning();
+    if (row) return toDesktopJob(row);
+    const identities: SQL[] = [];
+    if (input.id) identities.push(eq(desktopJobs.id, input.id));
+    if (input.runId && input.stepKey) {
+      identities.push(and(eq(desktopJobs.runId, input.runId), eq(desktopJobs.stepKey, input.stepKey))!);
+    }
+    if (identities.length === 0) throw new Error("Could not create desktop tool job.");
+    // The fallback lookup must never cross user boundaries: a colliding id or
+    // run/step identity owned by another user is not this user's job.
+    const [existing] = await this.db.select().from(desktopJobs)
+      .where(and(eq(desktopJobs.userId, input.userId), or(...identities)))
+      .limit(1);
+    if (!existing) throw new Error("Could not create desktop tool job.");
+    return toDesktopJob(existing);
   }
 
   async getDesktopJob(userId: string, jobId: string): Promise<DesktopJob | null> {
@@ -400,20 +452,70 @@ export class PostgresStore implements AppStore {
   }
 
   async listPendingDesktopJobs(userId: string, deviceId: string): Promise<DesktopJob[]> {
+    const at = new Date().toISOString();
     const rows = await this.db.select().from(desktopJobs).where(and(
       eq(desktopJobs.userId, userId),
       eq(desktopJobs.deviceId, deviceId),
       eq(desktopJobs.status, "pending"),
+      or(isNull(desktopJobs.claimedBy), and(isNotNull(desktopJobs.leaseExpiresAt), lte(desktopJobs.leaseExpiresAt, at))),
     )).orderBy(desktopJobs.createdAt).limit(20);
     return rows.map(toDesktopJob);
   }
 
-  async completeDesktopJob(userId: string, jobId: string, result: { ok: boolean; output?: unknown; error?: string }): Promise<DesktopJob | null> {
+  async claimDesktopJob(input: ClaimDesktopJobInput): Promise<DesktopJob | null> {
+    const at = input.now ?? new Date().toISOString();
+    const leaseExpiresAt = new Date(Date.parse(at) + input.leaseMs).toISOString();
+    const [row] = await this.db.update(desktopJobs).set({
+      claimedBy: input.deviceId,
+      claimedAt: at,
+      leaseExpiresAt,
+    }).where(and(
+      eq(desktopJobs.userId, input.userId),
+      eq(desktopJobs.id, input.jobId),
+      eq(desktopJobs.deviceId, input.deviceId),
+      eq(desktopJobs.status, "pending"),
+      or(isNull(desktopJobs.claimedBy), and(isNotNull(desktopJobs.leaseExpiresAt), lte(desktopJobs.leaseExpiresAt, at))),
+    )).returning();
+    return row ? toDesktopJob(row) : null;
+  }
+
+  async completeDesktopJob(
+    userId: string,
+    jobId: string,
+    result: { ok: boolean; output?: unknown; error?: string },
+    deviceId?: string,
+  ): Promise<DesktopJob | null> {
+    const conditions: SQL[] = [
+      eq(desktopJobs.userId, userId),
+      eq(desktopJobs.id, jobId),
+      eq(desktopJobs.status, "pending"),
+    ];
+    if (deviceId) {
+      conditions.push(eq(desktopJobs.deviceId, deviceId));
+      conditions.push(or(isNull(desktopJobs.claimedBy), eq(desktopJobs.claimedBy, deviceId))!);
+    }
     const [row] = await this.db.update(desktopJobs).set({
       status: result.ok ? "completed" : "failed",
       output: result.output ?? null,
       error: result.error ?? null,
-    }).where(and(eq(desktopJobs.userId, userId), eq(desktopJobs.id, jobId), eq(desktopJobs.status, "pending"))).returning();
+      claimedBy: null,
+      claimedAt: null,
+      leaseExpiresAt: null,
+    }).where(and(...conditions)).returning();
+    return row ? toDesktopJob(row) : null;
+  }
+
+  async markDesktopJobDelivery(
+    userId: string,
+    jobId: string,
+    delivery: DesktopJobDelivery,
+  ): Promise<DesktopJob | null> {
+    const [row] = await this.db.update(desktopJobs).set({
+      deliveryStatus: delivery.status,
+      deliveryAttempts: sql`${desktopJobs.deliveryAttempts} + 1`,
+      deliveryError: delivery.error ?? null,
+      ...(delivery.status === "delivered" ? { deliveredAt: new Date().toISOString() } : {}),
+    }).where(and(eq(desktopJobs.userId, userId), eq(desktopJobs.id, jobId))).returning();
     return row ? toDesktopJob(row) : null;
   }
 
@@ -423,6 +525,14 @@ export class PostgresStore implements AppStore {
       id: `approval_${crypto.randomUUID()}`,
       runId: input.runId ?? null,
       providerApprovalId: input.providerApprovalId ?? null,
+      toolName: input.toolName ?? null,
+      toolArgsRedacted: input.toolArgsRedacted ?? null,
+      toolRisk: input.toolRisk ?? "read",
+      idempotencyKey: input.idempotencyKey ?? null,
+      expiresAt: input.expiresAt ?? defaultApprovalExpiresAt(),
+      integrationId: input.integrationId ?? null,
+      integrationName: input.integrationName ?? null,
+      argsDigest: input.argsDigest ?? null,
     }).returning();
     if (!row) throw new Error("Could not create approval.");
     return toPendingAction(row);
@@ -458,6 +568,102 @@ export class PostgresStore implements AppStore {
 
   async setPendingActionStatus(userId: string, actionId: string, status: PendingAction["status"]): Promise<void> {
     await this.db.update(pendingActions).set({ status }).where(and(eq(pendingActions.userId, userId), eq(pendingActions.id, actionId)));
+  }
+
+  private async listMemory(scope: MemoryScope): Promise<MemoryFile[]> {
+    const rows = await this.db.select().from(memoryFiles)
+      .where(memoryScopeWhere(scope))
+      .orderBy(memoryFiles.path);
+    return rows.map(toMemoryFile);
+  }
+
+  private async readMemory(scope: MemoryScope, path: string): Promise<MemoryFile | null> {
+    const [row] = await this.db.select().from(memoryFiles)
+      .where(and(memoryScopeWhere(scope), eq(memoryFiles.path, path)))
+      .limit(1);
+    return row ? toMemoryFile(row) : null;
+  }
+
+  private async applyMemory(scope: MemoryScope, plan: MemoryWritePlan): Promise<MemoryFile | null> {
+    return this.db.transaction<MemoryFile | null>(async (tx) => {
+      if (plan.op === "create") {
+        if (plan.expectedVersion !== null) {
+          throw new MemoryConflictError("create must not carry an expected version");
+        }
+        const [row] = await tx.insert(memoryFiles).values({
+          id: `mem_${crypto.randomUUID()}`,
+          ...scope,
+          path: plan.path,
+          content: plan.content ?? "",
+          version: 1,
+          source: plan.source,
+          provenance: plan.provenance,
+          sourceRunId: plan.sourceRunId,
+          createdAt: plan.now,
+          updatedAt: plan.now,
+        }).onConflictDoNothing().returning();
+        if (!row) throw new MemoryConflictError(`Memory file already exists: ${plan.path}`);
+        return toMemoryFile(row);
+      }
+
+      const sourcePath = plan.op === "rename" ? plan.fromPath : plan.path;
+      if (!sourcePath) throw new MemoryConflictError("rename plan is missing its source path");
+      const [current] = await tx.select().from(memoryFiles)
+        .where(and(memoryScopeWhere(scope), eq(memoryFiles.path, sourcePath)))
+        .for("update")
+        .limit(1);
+      if (!current) throw new MemoryConflictError(`Memory file does not exist: ${sourcePath}`);
+      if (current.version !== plan.expectedVersion) {
+        throw new MemoryConflictError(
+          `Memory file ${sourcePath} changed (expected version ${plan.expectedVersion}, found ${current.version})`,
+        );
+      }
+
+      if (plan.op === "delete") {
+        await tx.delete(memoryFiles).where(and(
+          memoryScopeWhere(scope),
+          eq(memoryFiles.path, sourcePath),
+          eq(memoryFiles.version, current.version),
+        ));
+        return null;
+      }
+
+      const patch = plan.op === "rename"
+        ? { path: plan.path }
+        : { content: plan.content ?? "" };
+      try {
+        const [row] = await tx.update(memoryFiles)
+          .set({
+            ...patch,
+            version: current.version + 1,
+            source: plan.source,
+            provenance: plan.provenance,
+            sourceRunId: plan.sourceRunId,
+            updatedAt: plan.now,
+          })
+          .where(and(
+            memoryScopeWhere(scope),
+            eq(memoryFiles.path, sourcePath),
+            eq(memoryFiles.version, current.version),
+          ))
+          .returning();
+        if (!row) throw new MemoryConflictError(`Memory file ${sourcePath} changed during the write`);
+        return toMemoryFile(row);
+      } catch (error) {
+        if (isUniqueViolation(error)) {
+          throw new MemoryConflictError(`Memory file already exists: ${plan.path}`);
+        }
+        throw error;
+      }
+    });
+  }
+
+  private async deleteMemory(scope: MemoryScope, paths: string[]): Promise<number> {
+    if (paths.length === 0) return 0;
+    const rows = await this.db.delete(memoryFiles)
+      .where(and(memoryScopeWhere(scope), inArray(memoryFiles.path, paths)))
+      .returning({ id: memoryFiles.id });
+    return rows.length;
   }
 
   private async createAutomationTask(input: NewAutomationTask): Promise<AutomationTask> {
@@ -811,6 +1017,33 @@ export class PostgresStore implements AppStore {
         : [];
       if (!runRow) return { outcome: "approval_missing" };
 
+      const timestamp = input.now ?? new Date().toISOString();
+      // Atomic expiry guard: a persisted pending run cannot resume an action
+      // whose deadline has passed. Legacy null deadlines remain resumable.
+      if (isPendingActionExpired({ expiresAt: actionRow.expiresAt ? iso(actionRow.expiresAt) : null }, new Date(timestamp))) {
+        await tx.update(pendingActions)
+          .set({ status: "expired" })
+          .where(eq(pendingActions.id, actionRow.id));
+        if (runRow.status === "awaiting_approval") {
+          await tx.update(runs)
+            .set({
+              status: "expired",
+              fence: runRow.fence + 1,
+              leaseOwner: null,
+              leaseExpiresAt: null,
+              updatedAt: timestamp,
+            })
+            .where(eq(runs.id, runRow.id));
+          if (conversation.activeRunId === runRow.id) {
+            await tx.update(conversations)
+              .set({ activeRunId: null, runStatus: "idle", updatedAt: timestamp })
+              .where(eq(conversations.id, input.conversationId));
+          }
+          await this.appendEventTx(tx, runRow.id, "expired", { reason: "approval_expired" }, `expired:${runRow.id}`, timestamp);
+        }
+        return { outcome: "cancelled" };
+      }
+
       if (runRow.status !== "awaiting_approval") {
         return isActiveRunStatus(runRow.status)
           ? { outcome: "busy", run: toRun(runRow) }
@@ -818,7 +1051,6 @@ export class PostgresStore implements AppStore {
       }
       if (conversation.activeRunId !== runRow.id) return { outcome: "cancelled" };
 
-      const timestamp = input.now ?? new Date().toISOString();
       const botId = conversation.botIds[0] ?? runRow.botId;
       let updatedRun: typeof runs.$inferSelect | undefined;
       let updatedAction: typeof pendingActions.$inferSelect | undefined;
@@ -1404,6 +1636,14 @@ function toPendingAction(row: typeof pendingActions.$inferSelect): PendingAction
     status: row.status as PendingAction["status"],
     runId: row.runId,
     providerApprovalId: row.providerApprovalId,
+    toolName: row.toolName ?? null,
+    toolArgsRedacted: row.toolArgsRedacted ?? null,
+    toolRisk: row.toolRisk ?? "read",
+    idempotencyKey: row.idempotencyKey ?? null,
+    expiresAt: row.expiresAt ? iso(row.expiresAt) : null,
+    integrationId: row.integrationId ?? null,
+    integrationName: row.integrationName ?? null,
+    argsDigest: row.argsDigest ?? null,
     createdAt: iso(row.createdAt),
   };
 }
@@ -1506,6 +1746,16 @@ function toDesktopJob(row: typeof desktopJobs.$inferSelect): DesktopJob {
     status: row.status as DesktopJob["status"],
     output: row.output,
     error: row.error,
+    runId: row.runId,
+    stepKey: row.stepKey,
+    attempt: row.attempt,
+    claimedBy: row.claimedBy,
+    claimedAt: row.claimedAt ? iso(row.claimedAt) : null,
+    leaseExpiresAt: row.leaseExpiresAt ? iso(row.leaseExpiresAt) : null,
+    deliveryStatus: row.deliveryStatus as DesktopJob["deliveryStatus"],
+    deliveryAttempts: row.deliveryAttempts,
+    deliveryError: row.deliveryError,
+    deliveredAt: row.deliveredAt ? iso(row.deliveredAt) : null,
     createdAt: iso(row.createdAt),
   };
 }
@@ -1519,6 +1769,32 @@ function toIntegration(row: typeof integrations.$inferSelect): Integration {
     status: row.status as Integration["status"],
     toolCount: row.toolCount,
     lastError: row.lastError,
+    allowedWriteTools: row.allowedWriteTools ?? [],
     createdAt: iso(row.createdAt),
   };
+}
+
+function memoryScopeWhere(scope: MemoryScope) {
+  return and(
+    eq(memoryFiles.userId, scope.userId),
+    eq(memoryFiles.conversationId, scope.conversationId),
+    eq(memoryFiles.botId, scope.botId),
+  );
+}
+
+function toMemoryFile(row: typeof memoryFiles.$inferSelect): MemoryFile {
+  return {
+    path: row.path as MemoryFile["path"],
+    content: row.content,
+    version: row.version,
+    source: row.source as MemoryFile["source"],
+    provenance: row.provenance,
+    sourceRunId: row.sourceRunId,
+    createdAt: iso(row.createdAt),
+    updatedAt: iso(row.updatedAt),
+  };
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
 }

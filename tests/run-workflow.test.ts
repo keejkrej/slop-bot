@@ -46,7 +46,7 @@ async function awaitingApproval(store: FileStore) {
       kind: "message",
       userId: "demo-user",
       conversationId: conversation.id,
-      message: { senderType: "user", senderId: "demo-user", content: "Send the email" },
+      message: { senderType: "user", senderId: "demo-user", content: "Delete the memory file" },
     }),
   );
   const running = await store.runs.transitionRun({
@@ -65,8 +65,8 @@ async function awaitingApproval(store: FileStore) {
     conversationId: conversation.id,
     botId: "bot_nova",
     kind: "tool_approval",
-    summary: "send_email to owner@example.com",
-    modelMessages: [{ role: "user", content: "Send the email" }],
+    summary: "memory_delete notes/example.md",
+    modelMessages: [{ role: "user", content: "Delete the memory file" }],
     runId: claim.run.id,
     providerApprovalId: "provider-approval-1",
   });
@@ -388,7 +388,7 @@ describe("group-chat approval helpers", () => {
         {
           role: "assistant",
           content: [
-            { type: "tool-call", toolCallId: "call_1", toolName: "send_email", input: { to: "a@b.c" } },
+            { type: "tool-call", toolCallId: "call_1", toolName: "memory_delete", input: { path: "notes/example.md" } },
           ],
         },
       ],
@@ -408,13 +408,12 @@ describe("group-chat approval helpers", () => {
         {
           type: "tool-approval-request",
           approvalId: "approval-1",
-          toolCall: { input: { to: "owner@example.com", subject: "Hi", text: "Body" } },
+          toolCall: { toolName: "memory_delete", input: { path: "notes/example.md" } },
         },
       ],
     });
     expect(manual?.approvalId).toBe("approval-1");
-    expect(manual?.summary).toContain("owner@example.com");
-    expect(manual?.summary).toContain("Subject: Hi");
+    expect(manual?.summary).toContain("notes/example.md");
 
     const automatic = approvalRequestOf({
       content: [
@@ -422,7 +421,7 @@ describe("group-chat approval helpers", () => {
           type: "tool-approval-request",
           approvalId: "approval-2",
           isAutomatic: true,
-          toolCall: { input: { to: "owner@example.com" } },
+          toolCall: { toolName: "memory_delete", input: { path: "notes/example.md" } },
         },
       ],
     });

@@ -130,3 +130,18 @@ The HTTP entry point is `POST /api/cron/tick`, protected by `CRON_SECRET` with a
 constant-time comparison. It fails closed in production when the secret is
 unset and allows local ticks otherwise. `pnpm tick` runs the same service
 without HTTP auth.
+
+## Host schedule registration
+
+Production registration is a static Vercel Schedule in `apps/web/vercel.json`,
+using the current `schedules` object (not the legacy `crons` array). The entry
+is named `proactive-tick` and targets the path `/api/cron/tick` with
+`requestMethod: "POST"` every 15 minutes. Path targets default to `POST`, and
+the route exports only `POST`; there is no legacy `GET` fallback.
+
+`tests/vercel-schedules.test.ts` checks the repository configuration shape and
+the route's exported method. It does not prove that Vercel registered or invoked
+the schedule: registration happens on deploy, and invocation is a host-side
+event. Verify both against the deployed project with
+`vercel schedules list --project slop-bot --scope keejkrej-teams` and the
+schedule's execution history.

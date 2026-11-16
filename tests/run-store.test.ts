@@ -50,7 +50,7 @@ async function awaitingApproval(store: FileStore) {
     conversationId: conversation.id,
     botId: "bot_nova",
     kind: "tool_approval",
-    summary: "send_email to owner@example.com",
+    summary: "memory_delete notes/example.md",
     modelMessages: [],
     runId: claim.run.id,
   });
@@ -489,7 +489,7 @@ describe("FileStore run store", () => {
       conversationId: conversation.id,
       botId: "bot_nova",
       kind: "tool_approval",
-      summary: "send_email",
+      summary: "memory_delete notes/example.md",
       modelMessages: [{ role: "user", content: "Send it" }],
       runId: claim.run.id,
       providerApprovalId: "provider-approval-123",
@@ -510,7 +510,7 @@ describe("FileStore run store", () => {
       conversationId: conversation.id,
       botId: "bot_nova",
       kind: "tool_approval",
-      summary: "send_email",
+      summary: "memory_delete notes/example.md",
       modelMessages: [],
     });
 

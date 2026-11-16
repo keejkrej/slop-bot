@@ -6,14 +6,15 @@ import type { AppStore } from "@db/types";
 import { StoreDomainError } from "@db/types";
 import { requireUser } from "./auth";
 import { ApiError, errorResponse } from "./http";
+import { memoryErrorStatus } from "./memory";
 import {
-  callMcpTool,
   completeMcpOAuth,
   listMcpTools,
   probeIntegration,
   type OAuthCompletion,
 } from "./mcp";
 import type { McpToolDefinition } from "./mcp";
+import { executeMcpTool, type McpCallOptions } from "./gated-tools";
 import type { Integration } from "@slopbot/contracts";
 
 export class StoreService extends Context.Service<StoreService, AppStore>()("SlopBot/Store") {}
@@ -25,7 +26,7 @@ export class AuthService extends Context.Service<AuthService, {
 export type McpServiceShape = {
   probe(userId: string, integrationId: string, platform?: "web" | "android", request?: Request): Promise<{ integration: Integration; authorizationUrl: string | null }>;
   list(userId: string, integrationId: string): Promise<McpToolDefinition[]>;
-  call(userId: string, integrationId: string, toolName: string, args: Record<string, unknown>): Promise<unknown>;
+  call(userId: string, integrationId: string, toolName: string, args: Record<string, unknown>, options?: McpCallOptions): Promise<unknown>;
   completeOAuth(state: string, code: string, request: Request): Promise<OAuthCompletion>;
 };
 
@@ -37,7 +38,8 @@ export const AppLive = Layer.mergeAll(
   Layer.succeed(McpService, {
     probe: probeIntegration,
     list: listMcpTools,
-    call: callMcpTool,
+    call: (userId, integrationId, toolName, args, options) =>
+      executeMcpTool({ userId, integrationId, toolName, args, ...options }),
     completeOAuth: completeMcpOAuth,
   }),
 );
@@ -51,6 +53,10 @@ export function normalizeError(cause: unknown): ApiError {
     return new ApiError(cause.code === "not_found" ? 404 : 409, cause.message);
   }
   if (cause instanceof ZodError) return new ApiError(400, cause.issues[0]?.message ?? "Invalid request.");
+  const memoryStatus = memoryErrorStatus(cause);
+  if (memoryStatus !== null) {
+    return new ApiError(memoryStatus, cause instanceof Error ? cause.message : "Memory request failed.");
+  }
   if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "23505") {
     return new ApiError(409, "That handle is already in use.");
   }

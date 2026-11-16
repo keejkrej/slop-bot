@@ -1,4 +1,5 @@
 import { Effect } from "effect";
+import { toPublicPendingAction } from "@slopbot/contracts";
 import { authenticate, runApp, withStore } from "@/lib/server/effect";
 import { ApiError } from "@/lib/server/http";
 
@@ -12,7 +13,11 @@ export function GET(request: Request, context: { params: Promise<{ id: string }>
       store.listPendingActions(user.id, id),
     ]));
     if (!conversation) return yield* Effect.fail(new ApiError(404, "Conversation not found."));
-    return Response.json({ conversation, messages, pendingActions });
+    return Response.json({
+      conversation,
+      messages,
+      pendingActions: pendingActions.map(toPublicPendingAction),
+    });
   }));
 }
 

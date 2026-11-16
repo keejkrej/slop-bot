@@ -1,16 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { ClockCounterClockwiseIcon, LightningIcon, PlugsConnectedIcon, RobotIcon, SlidersHorizontalIcon } from "@phosphor-icons/react";
+import { BrainIcon, ClockCounterClockwiseIcon, LightningIcon, PlugsConnectedIcon, RobotIcon, SlidersHorizontalIcon } from "@phosphor-icons/react";
 import type { Bootstrap } from "@slopbot/contracts";
 import { ActivityView } from "./activity-view";
 import { AutomationsView } from "./automations-view";
 import { BotsView } from "./bots-view";
 import { ConnectionsView } from "./connections-view";
+import { MemoryView } from "./memory-view";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
-export type SettingsTab = "general" | "bots" | "connectors" | "automations" | "activity";
+export type SettingsTab = "general" | "bots" | "connectors" | "automations" | "memory" | "activity";
 
 export function WorkspaceSettings({ open, onOpenChange, data, tab, onTabChange, onCreateBot, onAddConnection, onRefresh, onSignOut, onBot }: {
   open: boolean;
@@ -33,6 +34,7 @@ export function WorkspaceSettings({ open, onOpenChange, data, tab, onTabChange, 
           <SettingsTabButton active={tab === "bots"} icon={<RobotIcon />} label="Bots" onClick={() => onTabChange("bots")} />
           <SettingsTabButton active={tab === "connectors"} icon={<PlugsConnectedIcon />} label="Connectors" onClick={() => onTabChange("connectors")} />
           <SettingsTabButton active={tab === "automations"} icon={<LightningIcon />} label="Automations" onClick={() => onTabChange("automations")} />
+          <SettingsTabButton active={tab === "memory"} icon={<BrainIcon />} label="Memory" onClick={() => onTabChange("memory")} />
           <SettingsTabButton active={tab === "activity"} icon={<ClockCounterClockwiseIcon />} label="Activity" onClick={() => onTabChange("activity")} />
         </aside>
         <section className="scrollbar-thin min-h-0 overflow-y-auto">
@@ -42,6 +44,8 @@ export function WorkspaceSettings({ open, onOpenChange, data, tab, onTabChange, 
             <ConnectionsView integrations={data.integrations} onAdd={onAddConnection} onRefresh={onRefresh} />
           ) : tab === "automations" ? (
             <AutomationsView bots={data.bots} onRefresh={onRefresh} />
+          ) : tab === "memory" ? (
+            <MemoryView bots={data.bots} conversations={data.conversations} />
           ) : (
             <ActivityView bots={data.bots} conversations={data.conversations} onBot={onBot ?? (() => undefined)} />
           )}

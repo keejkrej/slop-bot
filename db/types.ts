@@ -17,8 +17,10 @@ import type {
   RunStatus,
   RunTimer,
   RunTimerStatus,
+  ToolRisk,
   User,
 } from "@slopbot/contracts";
+import type { MemoryFile, MemoryWritePlan } from "../apps/web/lib/server/memory-files";
 
 export type NewMessage = Pick<
   ChatMessage,
@@ -30,7 +32,7 @@ export type NewIntegration = Pick<
   Integration,
   "kind" | "name" | "url" | "description" | "status"
 > &
-  Partial<Pick<Integration, "toolCount" | "lastError">>;
+  Partial<Pick<Integration, "toolCount" | "lastError" | "allowedWriteTools">>;
 
 export type PendingAction = {
   id: string;
@@ -43,18 +45,56 @@ export type PendingAction = {
   status: PendingActionStatus;
   runId: string | null;
   providerApprovalId: string | null;
+  /** Tool identity for a generic approval card. Legacy rows may be null. */
+  toolName: string | null;
+  /** Sanitized, bounded argument preview. Never the raw tool payload. */
+  toolArgsRedacted: Record<string, unknown> | null;
+  /** Safe default is `read` for legacy rows that predate risk metadata. */
+  toolRisk: ToolRisk;
+  /** Opaque server-generated key; never regenerated from user input. */
+  idempotencyKey: string | null;
+  /** Null only for legacy rows; new actions always receive a deadline. */
+  expiresAt: string | null;
+  integrationId: string | null;
+  integrationName: string | null;
+  /**
+   * Canonical digest of the exact approved arguments. Null for legacy rows;
+   * gated writes fail closed when it is missing.
+   */
+  argsDigest?: string | null;
   createdAt: string;
 };
 
 export type NewPendingAction = Omit<
   PendingAction,
-  "id" | "status" | "createdAt" | "runId" | "providerApprovalId"
+  | "id"
+  | "status"
+  | "createdAt"
+  | "runId"
+  | "providerApprovalId"
+  | "toolName"
+  | "toolArgsRedacted"
+  | "toolRisk"
+  | "idempotencyKey"
+  | "expiresAt"
+  | "integrationId"
+  | "integrationName"
+  | "argsDigest"
 > & {
   runId?: string | null;
   providerApprovalId?: string | null;
+  toolName?: string | null;
+  toolArgsRedacted?: Record<string, unknown> | null;
+  toolRisk?: ToolRisk;
+  idempotencyKey?: string | null;
+  expiresAt?: string | null;
+  integrationId?: string | null;
+  integrationName?: string | null;
+  argsDigest?: string | null;
 };
 
 export type DesktopJobStatus = "pending" | "completed" | "failed" | "expired";
+export type DesktopJobDeliveryStatus = "pending" | "delivered" | "failed";
 
 export type DesktopJob = {
   id: string;
@@ -66,10 +106,60 @@ export type DesktopJob = {
   status: DesktopJobStatus;
   output: unknown;
   error: string | null;
+  /** Logical run id when the caller can supply it. */
+  runId: string | null;
+  /** Stable workflow-step identity (workflow run id + step id). */
+  stepKey: string | null;
+  /** Persisted workflow attempt, when known. */
+  attempt: number | null;
+  /** Device that currently owns the execution lease. */
+  claimedBy: string | null;
+  claimedAt: string | null;
+  leaseExpiresAt: string | null;
+  /** Hook delivery is tracked separately from job execution. */
+  deliveryStatus: DesktopJobDeliveryStatus;
+  deliveryAttempts: number;
+  deliveryError: string | null;
+  deliveredAt: string | null;
   createdAt: string;
 };
 
-export type NewDesktopJob = Omit<DesktopJob, "id" | "status" | "output" | "error" | "createdAt">;
+export type NewDesktopJob = Omit<
+  DesktopJob,
+  | "id"
+  | "status"
+  | "output"
+  | "error"
+  | "createdAt"
+  | "runId"
+  | "stepKey"
+  | "attempt"
+  | "claimedBy"
+  | "claimedAt"
+  | "leaseExpiresAt"
+  | "deliveryStatus"
+  | "deliveryAttempts"
+  | "deliveryError"
+  | "deliveredAt"
+> & {
+  id?: string;
+  runId?: string | null;
+  stepKey?: string | null;
+  attempt?: number | null;
+};
+
+export type ClaimDesktopJobInput = {
+  userId: string;
+  jobId: string;
+  deviceId: string;
+  leaseMs: number;
+  now?: string;
+};
+
+export type DesktopJobDelivery = {
+  status: DesktopJobDeliveryStatus;
+  error?: string | null;
+};
 
 export type OAuthState = {
   state: string;
@@ -444,6 +534,32 @@ export interface AutomationStore {
 }
 
 /**
+ * Identity scope for one memory tree. Global user instructions use empty
+ * `conversationId`/`botId`; conversation memory is bound to one bot in one
+ * conversation. The adapter derives this from authenticated ownership, never
+ * from model input.
+ */
+export type MemoryScope = {
+  userId: string;
+  conversationId: string;
+  botId: string;
+};
+
+/**
+ * Durable file-backed memory. The store only persists validated plans and
+ * enforces compare-and-swap on `version`; path policy, secret checks, and
+ * identity resolution live in the server adapter.
+ */
+export interface MemoryStore {
+  list(scope: MemoryScope): Promise<MemoryFile[]>;
+  read(scope: MemoryScope, path: string): Promise<MemoryFile | null>;
+  /** Apply a validated plan atomically. Returns the resulting file, or null for delete. */
+  apply(scope: MemoryScope, plan: MemoryWritePlan): Promise<MemoryFile | null>;
+  /** Delete explicit paths in one scope. Returns the number removed. */
+  delete(scope: MemoryScope, paths: string[]): Promise<number>;
+}
+
+/**
  * Durable per-user read bookmarks. `markRead` only moves forward and is
  * idempotent; `getUnreadCounts` counts only bot messages after the bookmark.
  */
@@ -460,6 +576,7 @@ export interface AppStore {
   runs: RunStore;
   automations: AutomationStore;
   readState: ReadStateStore;
+  memory: MemoryStore;
 
   getUser(userId: string): Promise<User>;
   listBots(userId: string): Promise<Bot[]>;
@@ -486,7 +603,7 @@ export interface AppStore {
   updateIntegration(
     userId: string,
     integrationId: string,
-    patch: Partial<Pick<Integration, "status" | "toolCount" | "lastError">>,
+    patch: Partial<Pick<Integration, "status" | "toolCount" | "lastError" | "allowedWriteTools">>,
   ): Promise<void>;
   deleteIntegration(userId: string, integrationId: string): Promise<void>;
   getSecret<T>(userId: string, integrationId: string): Promise<T | null>;
@@ -499,10 +616,17 @@ export interface AppStore {
   createDesktopJob(input: NewDesktopJob): Promise<DesktopJob>;
   getDesktopJob(userId: string, jobId: string): Promise<DesktopJob | null>;
   listPendingDesktopJobs(userId: string, deviceId: string): Promise<DesktopJob[]>;
+  claimDesktopJob(input: ClaimDesktopJobInput): Promise<DesktopJob | null>;
   completeDesktopJob(
     userId: string,
     jobId: string,
     result: { ok: boolean; output?: unknown; error?: string },
+    deviceId?: string,
+  ): Promise<DesktopJob | null>;
+  markDesktopJobDelivery(
+    userId: string,
+    jobId: string,
+    delivery: DesktopJobDelivery,
   ): Promise<DesktopJob | null>;
 
   createPendingAction(input: NewPendingAction): Promise<PendingAction>;

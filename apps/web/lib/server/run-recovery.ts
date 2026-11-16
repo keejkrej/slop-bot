@@ -5,6 +5,7 @@ import type { getRun } from "workflow/api";
 import { isGatewayConfigured } from "./auth";
 import { admitClaim, defaultStartWorkflow, type RunStartResult } from "./runs";
 import { LEASE_MS, scheduleLeaseRecovery } from "./run-timers";
+import { isPendingActionExpired } from "./tool-permissions";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -401,10 +402,58 @@ async function handleStartHandoff(input: {
   }
 
   const action = run.actionId ? await store.getPendingAction(run.userId, run.actionId) : null;
-  const resumeAction =
-    action && (action.status === "pending" || action.status === "resuming") ? action : null;
-  const started = await startRun(run, resumeAction);
+  const resumable =
+    action !== null &&
+    (action.status === "pending" || action.status === "resuming") &&
+    !isPendingActionExpired(action, now);
+  if (isApprovalResume(run) && !resumable) {
+    // An approval-resume handoff whose action is missing, terminal, or past its
+    // deadline must never start a fresh workflow without provider approval
+    // context. Expire the queued run instead of resurrecting it.
+    await expireUnresumableHandoff({ store, run, action, result });
+    return;
+  }
+  const started = await startRun(run, resumable ? action : null);
   if (started.status === "running") result.handoffRetried += 1;
+  else result.skipped += 1;
+}
+
+/**
+ * Expire a queued approval-resume handoff that can no longer be resumed. The
+ * run, any still-pending action, and all timers are closed together so a later
+ * tick cannot start a workflow with no approval context.
+ */
+async function expireUnresumableHandoff(input: {
+  store: AppStore;
+  run: Run;
+  action: PendingAction | null;
+  result: RecoverRunsResult;
+}): Promise<void> {
+  const { store, run, action, result } = input;
+  const related =
+    action && (action.status === "pending" || action.status === "resuming") ? action : null;
+  const transition = await store.runs.transitionRun({
+    userId: run.userId,
+    runId: run.id,
+    expectedStatus: "queued",
+    expectedFence: run.fence,
+    status: "expired",
+    error: "Approval is no longer resumable.",
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    action: related ? { id: related.id, status: "expired" } : undefined,
+    event: {
+      type: "expired",
+      data: { reason: "approval_unresumable", actionId: action?.id ?? null },
+      dedupeKey: `expired:${run.id}`,
+    },
+    timers: [
+      { kind: "approval_timeout", status: "cancelled" },
+      { kind: "lease_recovery", status: "cancelled" },
+      { kind: "start_handoff", status: "cancelled" },
+    ],
+  });
+  if (transition.outcome === "applied") result.approvalExpired += 1;
   else result.skipped += 1;
 }
 
@@ -418,7 +467,7 @@ async function findActionForRun(store: AppStore, run: Run): Promise<PendingActio
   if (match) return match;
   if (run.actionId) {
     const action = await store.getPendingAction(run.userId, run.actionId);
-    if (action && (action.status === "pending" || action.status === "resuming")) return action;
+    if (action && (action.status === "pending" || action.status === "resuming") && !isPendingActionExpired(action)) return action;
   }
   return null;
 }
