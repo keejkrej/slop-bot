@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const DEFAULT_MODEL = "anthropic/claude-sonnet-5.5";
-export const MAX_GROUP_BOTS = 4;
+export const MAX_CHAT_BOTS = 1;
 
 export const botSchema = z.object({
   id: z.string(),
@@ -38,7 +38,7 @@ export const conversationSchema = z.object({
 
 export const createConversationSchema = z.object({
   title: z.string().trim().min(2).max(80),
-  botIds: z.array(z.string()).min(1).max(MAX_GROUP_BOTS),
+  botIds: z.array(z.string()).length(MAX_CHAT_BOTS),
 });
 
 export const messageSchema = z.object({

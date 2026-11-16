@@ -28,7 +28,7 @@ Sources: [Persistent sandboxes](https://vercel.com/docs/sandbox/concepts/persist
 ## Memory is not the system of record
 
 - **Neon:** bots, conversations, messages, connections, run state, and approvals.
-- **Mem0:** preferences and learned context, scoped by `agent_id` to one bot and `app_id` to Slop Bot. `run_id` identifies a group turn when useful.
+- **Mem0:** preferences and learned context, scoped by `agent_id` to one bot and `app_id` to Slop Bot. `run_id` identifies a reply run when useful.
 - **Drive:** files produced by a bot, only when persistence is required.
 
 Mem0 writes should use `infer: false` for explicitly attributed facts or role-tagged conversation messages for automatic extraction. Do not query with `AND(user_id, agent_id)` for extraction-produced memories; the default extraction path attributes facts to one speaker, not both.

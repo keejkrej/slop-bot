@@ -35,7 +35,7 @@ export default function RootLayout() {
               tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
             }}
           >
-            <Tabs.Screen name="index" options={{ title: 'Rooms', tabBarIcon: ({ color }) => <MessageCircle color={color} size={22} /> }} />
+            <Tabs.Screen name="index" options={{ title: 'Chats', tabBarIcon: ({ color }) => <MessageCircle color={color} size={22} /> }} />
             <Tabs.Screen name="bots" options={{ title: 'Bots', tabBarIcon: ({ color }) => <Bot color={color} size={22} /> }} />
             <Tabs.Screen name="connections" options={{ title: 'Tools', tabBarIcon: ({ color }) => <Cable color={color} size={22} /> }} />
             <Tabs.Screen name="conversation/[id]" options={{ href: null, tabBarStyle: { display: 'none' } }} />

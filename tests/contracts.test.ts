@@ -7,10 +7,10 @@ describe("shared product contracts", () => {
     expect(bot.model).toBe(DEFAULT_MODEL);
   });
 
-  it("bounds a group to four unique participants at the API boundary", () => {
-    const input = { title: "Council", botIds: ["a", "b", "c", "d"] };
-    expect(createConversationSchema.parse(input).botIds).toHaveLength(4);
-    expect(() => createConversationSchema.parse({ ...input, botIds: [...input.botIds, "e"] })).toThrow();
+  it("requires exactly one bot per chat at the API boundary", () => {
+    expect(createConversationSchema.parse({ title: "Nova", botIds: ["a"] }).botIds).toEqual(["a"]);
+    expect(() => createConversationSchema.parse({ title: "Council", botIds: ["a", "b"] })).toThrow();
+    expect(() => createConversationSchema.parse({ title: "Empty", botIds: [] })).toThrow();
   });
 
   it("rejects unsafe or ambiguous handles", () => {

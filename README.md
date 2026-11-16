@@ -1,6 +1,6 @@
 # Slop Bot
 
-A single-tenant personal bot club for Android, web, and desktop. Create custom bots, place up to four in a room, and run bounded group turns where each bot can read and respond to earlier speakers.
+A single-tenant personal bot club for Android, web, and desktop. Create custom bots and keep a focused one-to-one chat with each of them.
 
 ## What works
 
@@ -180,7 +180,7 @@ The repository includes unit tests for shared contracts, persistence/secret isol
 
 ## Intentional MVP boundaries
 
-- Group turns are sequential and bounded: at most four bots and six model steps per bot.
+- A chat has exactly one bot. Replies are bounded to six model steps.
 - Clients poll persisted messages; resumable token-by-token streaming is not yet exposed.
 - MCP tools are exposed only when explicitly marked read-only. Writes remain blocked until durable per-call approval UI is implemented.
 - Bots do not autonomously create endless conversations or recurse into uncontrolled bot-to-bot loops.
